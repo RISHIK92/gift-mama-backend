@@ -1,0 +1,198 @@
+// This is your Prisma schema file
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                    Int       @id @default(autoincrement())
+  firstName             String
+  lastName              String?
+  email                 String    @unique
+  phone                 String?
+  whatsappNumber        String?
+  usePrimaryForWhatsApp Boolean   @default(false)
+  image                 String?
+  address1              String?
+  address2              String?
+  city                  String?
+  state                 String?
+  country               String?
+  pinCode               String?
+  password              String
+  cart                  Cart?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @default(now()) @updatedAt
+}
+
+model Admin {
+  id            Int      @id @default(autoincrement())
+  firstName     String
+  lastName      String
+  phone         String
+  email         String   @unique
+  password      String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+}
+
+model Product {
+  id                    Int                    @id @default(autoincrement())
+  name                  String                 @unique
+  price                 Decimal
+  discount              Decimal?
+  discountedPrice       Decimal?
+  description           String?
+  requirements          String?
+  categories            String[]
+  occasion              String[]
+  recipients            String[]
+  subCategories         String[]
+  svgTemplate           String?
+  images                ProductImage[]
+  flashSaleItems        FlashSaleItem[]
+  cartItems             CartItem[]
+  customizationTemplate CustomizationTemplate?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @default(now()) @updatedAt
+}
+
+model CustomizationTemplate {
+  id        Int      @id @default(autoincrement())
+  name      String
+  svgData   String   @db.Text
+  product   Product  @relation(fields: [productId], references: [id])
+  productId Int      @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+}
+
+model Category {
+  id           Int        @id @default(autoincrement())
+  category     String     @unique
+  subCategory  String[]
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @default(now()) @updatedAt
+}
+
+model NavCategory {
+  id          Int        @id @default(autoincrement())
+  navCategory String     @unique
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @default(now()) @updatedAt
+}
+
+model AllCategories {
+  id              Int        @id @default(autoincrement())
+  categories      String[]   @unique
+  occasions       String[]
+  recipients      String[]
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @default(now()) @updatedAt
+}
+
+model ProductImage {
+  id           Int      @id @default(autoincrement())
+  product      Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId    Int
+  mainImage    String
+  displayImage String
+  subImages    String[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @default(now()) @updatedAt
+}
+
+model HomeImages {
+  id              Int      @id @default(autoincrement())
+  // Hero Banner section
+  heroImages      String[]
+  heroTitles      String[]
+  heroSubtitles   String[]
+  
+  // Flash Sale section
+  flashSaleEnabled Boolean  @default(true)
+  flashSaleDescription String @default("Hurry Up! Flash Sale")
+  
+  // Advert section
+  advertImages    String[]
+  
+  // Custom Sections
+  customSections  CustomSection[]
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @default(now()) @updatedAt
+}
+
+model CustomSection {
+  id            Int        @id @default(autoincrement())
+  homeImages    HomeImages @relation(fields: [homeImagesId], references: [id], onDelete: Cascade)
+  homeImagesId  Int
+  category      String
+  title         String
+  enabled       Boolean    @default(true)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @default(now()) @updatedAt
+}
+
+model Occasion {
+  id              Int      @id @default(autoincrement())
+  occasionName    String[]
+  occasionImages  String[]
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @default(now()) @updatedAt
+}
+
+model FlashSale {
+  id          Int            @id @default(autoincrement())
+  title       String
+  description String
+  startTime   DateTime
+  endTime     DateTime
+  active      Boolean        @default(true)
+  items       FlashSaleItem[]
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @default(now()) @updatedAt
+}
+
+model FlashSaleItem {
+  id          Int       @id @default(autoincrement())
+  flashSale   FlashSale @relation(fields: [flashSaleId], references: [id], onDelete: Cascade)
+  flashSaleId Int
+  product     Product   @relation(fields: [productId], references: [id])
+  productId   Int
+  salePrice   Decimal
+  discount    Decimal
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @default(now()) @updatedAt
+
+  @@unique([flashSaleId, productId])
+}
+
+model Cart {
+  id        Int         @id @default(autoincrement())
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    Int
+  items     CartItem[]
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @default(now()) @updatedAt
+
+  @@unique([userId])
+}
+
+model CartItem {
+  id         Int      @id @default(autoincrement())
+  cart       Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  cartId     Int
+  product    Product  @relation(fields: [productId], references: [id])
+  productId  Int
+  quantity   Int      @default(1)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @default(now()) @updatedAt
+
+  @@unique([cartId, productId])
+}
