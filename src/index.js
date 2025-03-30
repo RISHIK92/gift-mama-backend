@@ -557,7 +557,7 @@ app.get('/all-categories', async (req, res) => {
 
 app.get('/get-categories', async (req, res) => {
     try {
-        const categories = await prisma.Categories.findMany();
+        const categories = await prisma.categories.findMany();
         res.status(200).json(categories);
     } catch (error) {
         console.error("Error fetching all categories:", error);

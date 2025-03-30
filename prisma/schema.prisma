@@ -11,21 +11,21 @@ datasource db {
 model User {
   firstName             String
   lastName              String?
-  email                 String   @unique
+  email                 String        @unique
   phone                 String?
   city                  String?
   password              String
-  id                    Int      @id @default(autoincrement())
+  id                    Int           @id @default(autoincrement())
   address1              String?
   address2              String?
   country               String?
   image                 String?
   pinCode               String?
   state                 String?
-  usePrimaryForWhatsApp Boolean  @default(false)
+  usePrimaryForWhatsApp Boolean       @default(false)
   whatsappNumber        String?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @default(now()) @updatedAt
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @default(now()) @updatedAt
   cart                  Cart?
   orders                Order[]
   wallet                Wallet?
@@ -208,8 +208,8 @@ model Order {
   amount            Float
   status            String      @default("INITIATED")
   currency          String
-  useWallet         Boolean     @default(false)  // Add this line
-  walletAmount      Float       @default(0)      // Add this line
+  useWallet         Boolean     @default(false) // Add this line
+  walletAmount      Float       @default(0) // Add this line
   createdAt         DateTime    @default(now())
   user              User        @relation(fields: [userId], references: [id])
   orderItems        OrderItem[]
@@ -226,36 +226,36 @@ model OrderItem {
 }
 
 model Wallet {
-  id            Int           @id @default(autoincrement())
-  userId        Int           @unique
-  user          User          @relation(fields: [userId], references: [id])
-  balance       Float         @default(0)
-  transactions  Transaction[]
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  id           Int           @id @default(autoincrement())
+  userId       Int           @unique
+  user         User          @relation(fields: [userId], references: [id])
+  balance      Float         @default(0)
+  transactions Transaction[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
 }
 
 model WalletOrder {
-  id                 Int       @id @default(autoincrement())
-  userId             Int
-  user               User      @relation(fields: [userId], references: [id])
-  razorpayOrderId    String    @unique
-  razorpayPaymentId  String?
-  razorpaySignature  String?
-  amount             Float
-  status             String    @default("INITIATED")
-  currency           String    @default("INR")
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
+  id                Int      @id @default(autoincrement())
+  userId            Int
+  user              User     @relation(fields: [userId], references: [id])
+  razorpayOrderId   String   @unique
+  razorpayPaymentId String?
+  razorpaySignature String?
+  amount            Float
+  status            String   @default("INITIATED")
+  currency          String   @default("INR")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 }
 
 model Transaction {
-  id               Int      @id @default(autoincrement())
-  walletId         Int
-  wallet           Wallet   @relation(fields: [walletId], references: [id])
-  amount           Float
-  type             String
-  description      String
+  id                Int      @id @default(autoincrement())
+  walletId          Int
+  wallet            Wallet   @relation(fields: [walletId], references: [id])
+  amount            Float
+  type              String
+  description       String
   razorpayPaymentId String?
-  createdAt        DateTime @default(now())
+  createdAt         DateTime @default(now())
 }
