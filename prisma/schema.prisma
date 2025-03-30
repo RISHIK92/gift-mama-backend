@@ -1,0 +1,261 @@
+// schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  firstName             String
+  lastName              String?
+  email                 String   @unique
+  phone                 String?
+  city                  String?
+  password              String
+  id                    Int      @id @default(autoincrement())
+  address1              String?
+  address2              String?
+  country               String?
+  image                 String?
+  pinCode               String?
+  state                 String?
+  usePrimaryForWhatsApp Boolean  @default(false)
+  whatsappNumber        String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @default(now()) @updatedAt
+  cart                  Cart?
+  orders                Order[]
+  wallet                Wallet?
+  walletOrders          WalletOrder[]
+}
+
+model Admin {
+  email     String   @unique
+  password  String
+  id        Int      @id @default(autoincrement())
+  firstName String
+  lastName  String
+  phone     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+}
+
+model Product {
+  name                  String                 @unique
+  price                 Decimal
+  discount              Decimal?
+  discountedPrice       Decimal?
+  description           String?
+  id                    Int                    @id @default(autoincrement())
+  categories            String[]
+  subCategories         String[]
+  occasion              String[]
+  recipients            String[]
+  createdAt             DateTime               @default(now())
+  svgTemplate           String?
+  updatedAt             DateTime               @default(now()) @updatedAt
+  requirements          String?
+  subSections           String[]
+  cartItems             CartItem[]
+  customizationTemplate CustomizationTemplate?
+  flashSaleItems        FlashSaleItem[]
+  orderItems            OrderItem[]
+  images                ProductImage[]
+}
+
+model CustomizationTemplate {
+  id        Int      @id @default(autoincrement())
+  name      String
+  svgData   String
+  productId Int      @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  product   Product  @relation(fields: [productId], references: [id])
+}
+
+model Category {
+  id          Int      @id @default(autoincrement())
+  subCategory String[]
+  category    String   @unique
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+}
+
+model Categories {
+  id            Int      @id @default(autoincrement())
+  categories    String   @unique
+  subCategories String[]
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+}
+
+model NavCategory {
+  id          Int      @id @default(autoincrement())
+  navCategory String   @unique
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+}
+
+model AllCategories {
+  id         Int      @id @default(autoincrement())
+  categories String[] @unique
+  occasions  String[]
+  recipients String[]
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @default(now()) @updatedAt
+}
+
+model ProductImage {
+  mainImage    String
+  subImages    String[]
+  displayImage String
+  id           Int      @id @default(autoincrement())
+  productId    Int
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @default(now()) @updatedAt
+  product      Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+}
+
+model HomeImages {
+  id                   Int             @id @default(autoincrement())
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @default(now()) @updatedAt
+  advertImages         String[]
+  flashSaleDescription String          @default("Hurry Up! Flash Sale")
+  flashSaleEnabled     Boolean         @default(true)
+  heroImages           String[]
+  heroSubtitles        String[]
+  heroTitles           String[]
+  customSections       CustomSection[]
+}
+
+model CustomSection {
+  id           Int        @id @default(autoincrement())
+  homeImagesId Int
+  category     String
+  title        String
+  enabled      Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @default(now()) @updatedAt
+  homeImages   HomeImages @relation(fields: [homeImagesId], references: [id], onDelete: Cascade)
+}
+
+model Occasion {
+  id             Int      @id @default(autoincrement())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @default(now()) @updatedAt
+  occasionImages String[]
+  occasionName   String[]
+}
+
+model FlashSale {
+  id          Int             @id @default(autoincrement())
+  title       String
+  startTime   DateTime
+  endTime     DateTime
+  active      Boolean         @default(true)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @default(now()) @updatedAt
+  description String
+  items       FlashSaleItem[]
+}
+
+model FlashSaleItem {
+  id          Int       @id @default(autoincrement())
+  flashSaleId Int
+  productId   Int
+  salePrice   Decimal
+  discount    Decimal
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @default(now()) @updatedAt
+  flashSale   FlashSale @relation(fields: [flashSaleId], references: [id], onDelete: Cascade)
+  product     Product   @relation(fields: [productId], references: [id])
+
+  @@unique([flashSaleId, productId])
+}
+
+model Cart {
+  id        Int        @id @default(autoincrement())
+  userId    Int        @unique
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @default(now()) @updatedAt
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items     CartItem[]
+}
+
+model CartItem {
+  id        Int      @id @default(autoincrement())
+  cartId    Int
+  productId Int
+  quantity  Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  cart      Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  product   Product  @relation(fields: [productId], references: [id])
+
+  @@unique([cartId, productId])
+}
+
+model Order {
+  id                Int         @id @default(autoincrement())
+  userId            Int
+  razorpayOrderId   String      @unique
+  razorpayPaymentId String?
+  razorpaySignature String?
+  amount            Float
+  status            String      @default("INITIATED")
+  currency          String
+  useWallet         Boolean     @default(false)  // Add this line
+  walletAmount      Float       @default(0)      // Add this line
+  createdAt         DateTime    @default(now())
+  user              User        @relation(fields: [userId], references: [id])
+  orderItems        OrderItem[]
+}
+
+model OrderItem {
+  id        Int     @id @default(autoincrement())
+  orderId   Int
+  productId Int
+  quantity  Int
+  price     Float
+  order     Order   @relation(fields: [orderId], references: [id])
+  product   Product @relation(fields: [productId], references: [id])
+}
+
+model Wallet {
+  id            Int           @id @default(autoincrement())
+  userId        Int           @unique
+  user          User          @relation(fields: [userId], references: [id])
+  balance       Float         @default(0)
+  transactions  Transaction[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+model WalletOrder {
+  id                 Int       @id @default(autoincrement())
+  userId             Int
+  user               User      @relation(fields: [userId], references: [id])
+  razorpayOrderId    String    @unique
+  razorpayPaymentId  String?
+  razorpaySignature  String?
+  amount             Float
+  status             String    @default("INITIATED")
+  currency           String    @default("INR")
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+}
+
+model Transaction {
+  id               Int      @id @default(autoincrement())
+  walletId         Int
+  wallet           Wallet   @relation(fields: [walletId], references: [id])
+  amount           Float
+  type             String
+  description      String
+  razorpayPaymentId String?
+  createdAt        DateTime @default(now())
+}

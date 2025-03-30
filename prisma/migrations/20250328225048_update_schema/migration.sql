@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "Order" ADD COLUMN     "useWallet" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN     "walletAmount" DOUBLE PRECISION NOT NULL DEFAULT 0;
