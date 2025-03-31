@@ -1166,6 +1166,100 @@ app.get('/order/:orderId',authenticateUser, async (req,res) => {
       }
 })
 
+app.get('/orders/latest', authenticateUser, async (req, res) => {
+    try {
+        const latestOrder = await prisma.order.findFirst({
+            where: { 
+                userId: req.user.id 
+            },
+            orderBy: {
+                createdAt: 'desc'
+            },
+            include: {
+                orderItems: {
+                    include: {
+                        product: {
+                            include: {
+                                images: true
+                            }
+                        }
+                    }
+                },
+                user: {
+                    select: {
+                        email: true,
+                        firstName: true,
+                        lastName: true
+                    }
+                }
+            }
+        });
+
+        if (!latestOrder) {
+            return res.status(404).json({ 
+                success: false,
+                message: "No orders found for this user" 
+            });
+        }
+
+        // Calculate order values
+        const subtotal = latestOrder.orderItems.reduce(
+            (sum, item) => sum + (item.price * item.quantity), 
+            0
+        );
+        
+        const taxRate = 0.1; // 10% tax
+        const deliveryFee = 50;
+        const tax = subtotal * taxRate;
+        const total = subtotal + tax + deliveryFee - (latestOrder.walletAmount || 0);
+
+        // Prepare clean response object
+        const response = {
+            success: true,
+            data: {
+                orderId: latestOrder.id,
+                orderNumber: `ORD-${latestOrder.id.toString().padStart(6, '0')}`,
+                date: latestOrder.createdAt.toISOString(),
+                payment: {
+                    method: latestOrder.razorpayPaymentId ? 'Online' : 'Wallet',
+                    status: latestOrder.status,
+                    walletUsed: latestOrder.walletAmount || 0
+                },
+                summary: {
+                    subtotal: parseFloat(subtotal.toFixed(2)),
+                    delivery: deliveryFee,
+                    tax: parseFloat(tax.toFixed(2)),
+                    total: parseFloat(total.toFixed(2))
+                },
+                items: latestOrder.orderItems.map(item => ({
+                    itemId: item.id,
+                    quantity: item.quantity,
+                    unitPrice: item.price,
+                    product: {
+                        id: item.product.id,
+                        name: item.product.name,
+                        image: item.product.images[0]?.mainImage || null
+                    }
+                })),
+                customer: {
+                    email: latestOrder.user.email,
+                    name: `${latestOrder.user.firstName} ${latestOrder.user.lastName}`
+                }
+            }
+        };
+
+        res.status(200).json(response);
+    } catch (error) {
+        console.error("Order fetch error:", error);
+        res.status(500).json({ 
+            success: false,
+            message: "Failed to retrieve order details",
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+});
+
+
 app.post('/wallet/create-order', authenticateUser, async (req, res) => {
     try {
       const { amount, currency = 'INR' } = req.body;

@@ -208,11 +208,26 @@ model Order {
   amount            Float
   status            String      @default("INITIATED")
   currency          String
-  useWallet         Boolean     @default(false) // Add this line
-  walletAmount      Float       @default(0) // Add this line
+  useWallet         Boolean     @default(false)
+  walletAmount      Float       @default(0)
   createdAt         DateTime    @default(now())
   user              User        @relation(fields: [userId], references: [id])
   orderItems        OrderItem[]
+  shippingAddress   ShippingAddress?
+}
+
+model ShippingAddress {
+  id        Int     @id @default(autoincrement())
+  orderId   Int     @unique
+  name      String?
+  line1     String?
+  line2     String?
+  city      String?
+  state     String?
+  postalCode String?
+  country   String?
+  phone     String?
+  order     Order   @relation(fields: [orderId], references: [id])
 }
 
 model OrderItem {
