@@ -30,6 +30,8 @@ model User {
   orders                Order[]
   wallet                Wallet?
   walletOrders          WalletOrder[]
+  address               Address[]
+  couponUsage           CouponUsage[]
 }
 
 model Admin {
@@ -60,10 +62,12 @@ model Product {
   requirements          String?
   subSections           String[]
   cartItems             CartItem[]
+  wishlistItems         WishlistItem[]
   customizationTemplate CustomizationTemplate?
   flashSaleItems        FlashSaleItem[]
   orderItems            OrderItem[]
   images                ProductImage[]
+  deliveryFee          Decimal?   @default(0)
 }
 
 model CustomizationTemplate {
@@ -88,6 +92,20 @@ model Categories {
   id            Int      @id @default(autoincrement())
   categories    String   @unique
   subCategories String[]
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+}
+
+model Occasions {
+  id            Int      @id @default(autoincrement())
+  occasions   String   @unique
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+}
+
+model Recipients {
+  id            Int      @id @default(autoincrement())
+  recipients   String   @unique
   createdAt     DateTime @default(now())
   updatedAt     DateTime @default(now()) @updatedAt
 }
@@ -178,25 +196,56 @@ model FlashSaleItem {
 }
 
 model Cart {
-  id        Int        @id @default(autoincrement())
-  userId    Int        @unique
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @default(now()) @updatedAt
-  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  items     CartItem[]
+  id                    Int        @id @default(autoincrement())
+  userId                Int        @unique
+  createdAt             DateTime   @default(now())
+  updatedAt             DateTime   @default(now()) @updatedAt
+  user                  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items                 CartItem[]
+  appliedCouponId       Int?
+  appliedCoupon         Coupon?    @relation(fields: [appliedCouponId], references: [id])
+  couponDiscountAmount  Decimal?   @default(0)
+  couponDiscountType    String?
+  couponDiscountValue   Decimal?
+  deliveryFee          Decimal?   @default(0)
+  couponId       Int?
+  discountAmount Decimal?   @default(0)
+
+  @@index([userId])
 }
 
 model CartItem {
-  id        Int      @id @default(autoincrement())
-  cartId    Int
-  productId Int
-  quantity  Int      @default(1)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @default(now()) @updatedAt
-  cart      Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
-  product   Product  @relation(fields: [productId], references: [id])
+  id             Int      @id @default(autoincrement())
+  cartId         Int
+  productId      Int
+  quantity       Int      @default(1)
+  flashSalePrice Decimal?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @default(now()) @updatedAt
+  cart           Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  product        Product  @relation(fields: [productId], references: [id])
 
   @@unique([cartId, productId])
+}
+
+model Wishlist {
+  id        Int           @id @default(autoincrement())
+  userId    Int           @unique
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  items     WishlistItem[]
+}
+
+model WishlistItem {
+  id         Int      @id @default(autoincrement())
+  wishlistId Int
+  productId  Int
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  wishlist   Wishlist @relation(fields: [wishlistId], references: [id], onDelete: Cascade)
+  product    Product  @relation(fields: [productId], references: [id])
+
+  @@unique([wishlistId, productId])
 }
 
 model Order {
@@ -207,6 +256,7 @@ model Order {
   razorpaySignature String?
   amount            Float
   status            String      @default("INITIATED")
+  delivery          String      @default("Ordered")
   currency          String
   useWallet         Boolean     @default(false)
   walletAmount      Float       @default(0)
@@ -214,6 +264,30 @@ model Order {
   user              User        @relation(fields: [userId], references: [id])
   orderItems        OrderItem[]
   shippingAddress   ShippingAddress?
+  notes             String?
+  appliedCouponId   Int?
+  couponDiscountAmount Decimal? @default(0)
+  deliveryFee          Decimal    @default(0)
+  couponId          Int?
+  coupon            Coupon?      @relation(fields: [couponId], references: [id])
+  couponUsage       CouponUsage[]
+}
+
+model Address {
+  id         Int      @id @default(autoincrement())
+  userId     Int
+  name       String
+  line1      String
+  line2      String?
+  city       String
+  state      String
+  postalCode String
+  country    String
+  phone      String
+  isDefault  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @default(now()) @updatedAt
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model ShippingAddress {
@@ -273,4 +347,50 @@ model Transaction {
   description       String
   razorpayPaymentId String?
   createdAt         DateTime @default(now())
+}
+
+// Add to your schema.prisma file
+
+model Coupon {
+  id                   Int          @id @default(autoincrement())
+  code                 String       @unique
+  description          String?
+  discountType         DiscountType // PERCENTAGE or FIXED
+  discountValue        Decimal
+  minPurchaseAmount    Decimal?
+  maxDiscountAmount    Decimal?
+  startDate            DateTime
+  endDate              DateTime
+  isActive             Boolean      @default(true)
+  usageLimit           Int?
+  usageCount           Int          @default(0)
+  perUserLimit         Int?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @default(now()) @updatedAt
+  applicableUserIds    Int[]
+  applicableProductIds Int[]
+  applicableCategories String[]
+  applicableOccasions  String[]
+  applicableRecipients String[]
+  usages               CouponUsage[]
+  orders               Order[]
+  carts                Cart[]
+}
+
+model CouponUsage {
+  id        Int      @id @default(autoincrement())
+  couponId  Int
+  userId    Int
+  orderId   Int?
+  usedAt    DateTime @default(now())
+  coupon    Coupon   @relation(fields: [couponId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
+  order     Order?   @relation(fields: [orderId], references: [id])
+
+  @@unique([couponId, orderId])
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED
 }

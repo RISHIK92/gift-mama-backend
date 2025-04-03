@@ -565,6 +565,26 @@ app.get('/get-categories', async (req, res) => {
     } 
 })
 
+app.get('/get-occasions', async (req, res) => {
+    try {
+        const occasion = await prisma.occasions.findMany();
+        res.status(200).json(occasion);
+    } catch (error) {
+        console.error("Error fetching all occasions:", error);
+        res.status(500).json({ message: "Internal server error" });
+    } 
+})
+
+app.get('/get-recipients', async (req, res) => {
+    try {
+        const recipient = await prisma.recipients.findMany();
+        res.status(200).json(recipient);
+    } catch (error) {
+        console.error("Error fetching all recipients:", error);
+        res.status(500).json({ message: "Internal server error" });
+    }
+})
+
 // HOME PAGE ROUTES
 app.get('/home', async (req, res) => {
     try {
@@ -608,7 +628,6 @@ app.get('/home', async (req, res) => {
     }
 });
 
-// FLASH SALES ROUTES
 app.get('/flash-sales', async (req, res) => {
     try {
         const currentTime = new Date();
@@ -639,117 +658,48 @@ app.get('/flash-sales', async (req, res) => {
     }
 });
 
+app.get('/flash-sales/active', async(req, res) => {
+    try {
+        const now = new Date();
+        
+        const activeFlashSales = await prisma.flashSale.findMany({
+          where: {
+            active: true,
+            startTime: {
+              lte: now
+            },
+            endTime: {
+              gte: now
+            }
+          },
+          orderBy: {
+            endTime: 'asc'
+          }
+        });
+    
+        res.json(activeFlashSales);
+      } catch (error) {
+        console.error('Error fetching active flash sales:', error);
+        res.status(500).json({ error: 'Failed to fetch active flash sales' });
+      }
+})
+
 app.get('/flash-sales/:id', async (req, res) => {
     try {
         const { id } = req.params;
         
-        const flashSale = await prisma.flashSale.findUnique({
-            where: { id: Number(id) },
-            include: {
-                items: {
-                    include: {
-                        product: {
-                            include: {
-                                images: true
-                            }
-                        }
-                    }
-                }
+        const now = new Date();
+        const flashSale = await prisma.flashSale.findFirst({
+          where: {
+            id: parseInt(id),
+            active: true,
+            startTime: {
+              lte: now
+            },
+            endTime: {
+              gte: now
             }
-        });
-        
-        if (!flashSale) {
-            return res.status(404).json({ message: "Flash sale not found" });
-        }
-        
-        res.status(200).json(flashSale);
-    } catch (error) {
-        console.error("Error fetching flash sale:", error);
-        res.status(500).json({ message: "Internal server error" });
-    }
-});
-
-// CART ROUTES
-app.post('/cart/add', authenticateUser, async (req, res) => {
-    try {
-        const { productId, quantity = 1 } = req.body;
-        
-        if (!productId) {
-            return res.status(400).json({ message: "Product ID is required" });
-        }
-        
-        // Check if product exists
-        const product = await prisma.product.findUnique({
-            where: { id: Number(productId) }
-        });
-        
-        if (!product) {
-            return res.status(404).json({ message: "Product not found" });
-        }
-        
-        // Get or create user's cart
-        let cart = await prisma.cart.findUnique({
-            where: { userId: req.user.id }
-        });
-        
-        if (!cart) {
-            cart = await prisma.cart.create({
-                data: { userId: req.user.id }
-            });
-        }
-        
-        // Check if item already exists in cart
-        const existingItem = await prisma.cartItem.findUnique({
-            where: {
-                cartId_productId: {
-                    cartId: cart.id,
-                    productId: Number(productId)
-                }
-            }
-        });
-        
-        if (existingItem) {
-            await prisma.cartItem.update({
-                where: { id: existingItem.id },
-                data: { quantity: existingItem.quantity + Number(quantity) }
-            });
-        } else {
-            await prisma.cartItem.create({
-                data: {
-                    cartId: cart.id,
-                    productId: Number(productId),
-                    quantity: Number(quantity)
-                }
-            });
-        }
-        
-        const updatedCart = await prisma.cart.findUnique({
-            where: { userId: req.user.id },
-            include: {
-                items: {
-                    include: {
-                        product: {
-                            include: {
-                                images: true
-                            }
-                        }
-                    }
-                }
-            }
-        });
-        
-        res.status(200).json({ message: "Item added to cart", cart: updatedCart });
-    } catch (error) {
-        console.error("Error adding to cart:", error);
-        res.status(500).json({ message: "Internal server error" });
-    }
-});
-
-app.get('/cart', authenticateUser, async (req, res) => {
-    try {
-      const [cart, wallet] = await Promise.all([
-        prisma.cart.findUnique({
-          where: { userId: req.user.id },
+          },
           include: {
             items: {
               include: {
@@ -761,57 +711,249 @@ app.get('/cart', authenticateUser, async (req, res) => {
               }
             }
           }
-        }),
-        prisma.wallet.findUnique({
-          where: { userId: req.user.id }
-        })
-      ]);
-  
-      if (!cart) {
-        return res.status(200).json({ 
-          items: [], 
-          summary: { 
-            subtotal: 0, 
-            discount: 0, 
-            total: 0, 
-            deliveryFee: 200, 
-            tax: 0 
-          },
-          walletBalance: wallet?.balance || 0
         });
+    
+        if (!flashSale) {
+          return res.status(404).json({ error: 'Flash sale not found or not active' });
+        }
+    
+        res.json(flashSale);
+      } catch (error) {
+        console.error('Error fetching flash sale details:', error);
+        res.status(500).json({ error: 'Failed to fetch flash sale details' });
       }
-  
-      let subtotal = 0;
-      let discount = 0;
-      
-      cart.items.forEach(item => {
-        const price = Number(item.product.price);
-        const discountedPrice = item.product.discountedPrice ? 
-          Number(item.product.discountedPrice) : price;
+});
+
+app.post('/cart/add', authenticateUser, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { productId, quantity = 1 } = req.body;
         
-        subtotal += price * item.quantity;
-        discount += (price - discountedPrice) * item.quantity;
+        if (!productId) {
+          return res.status(400).json({ message: 'Product ID is required' });
+        }
+        
+        // Check if product exists
+        const product = await prisma.product.findUnique({
+          where: { id: productId }
+        });
+        
+        if (!product) {
+          return res.status(404).json({ message: 'Product not found' });
+        }
+        
+        // Find or create user's cart
+        let cart = await prisma.cart.findFirst({
+          where: { userId }
+        });
+        
+        if (!cart) {
+          cart = await prisma.cart.create({
+            data: { userId }
+          });
+        }
+        
+        // Check if item is already in cart
+        const existingItem = await prisma.cartItem.findFirst({
+          where: {
+            cartId: cart.id,
+            productId
+          }
+        });
+        
+        if (existingItem) {
+          // Update quantity if item already exists
+          await prisma.cartItem.update({
+            where: { id: existingItem.id },
+            data: { quantity: existingItem.quantity + quantity }
+          });
+        } else {
+          // Add new item to cart
+          await prisma.cartItem.create({
+            data: {
+              cartId: cart.id,
+              productId,
+              quantity
+            }
+          });
+        }
+        
+        // Recalculate discounts if a coupon is applied
+        if (cart.couponId) {
+          await recalculateCartDiscount(cart.id);
+        }
+        
+        res.status(201).json({ message: 'Item added to cart' });
+        
+      } catch (error) {
+        console.error('Error adding item to cart:', error);
+        res.status(500).json({ message: 'Failed to add item to cart' });
+      }
+  });
+
+  async function recalculateCartDiscount(cartId) {
+    try {
+      // Fetch cart with items and coupon
+      const cart = await prisma.cart.findUnique({
+        where: { id: cartId },
+        include: {
+          items: {
+            include: {
+              product: true
+            }
+          },
+          appliedCoupon: true
+        }
       });
-  
-      const total = subtotal - discount;
-      const tax = Math.round(total * 0.02); // 2% tax
-      const deliveryFee = 200;
-  
-      res.status(200).json({
-        items: cart.items,
-        summary: {
-          subtotal,
-          discount,
-          total,
-          deliveryFee,
-          tax
-        },
-        walletBalance: wallet?.balance || 0
+      
+      if (!cart || !cart.coupon) {
+        return; // No coupon to recalculate
+      }
+      
+      // Calculate cart subtotal
+      const subtotal = cart.items.reduce((total, item) => {
+        const price = item.product.discountedPrice || item.product.price;
+        return total + (parseFloat(price) * item.quantity);
+      }, 0);
+      
+      // Check if cart still meets minimum purchase requirement
+      if (cart.coupon.minPurchaseAmount && subtotal < parseFloat(cart.coupon.minPurchaseAmount)) {
+        // Remove coupon if minimum purchase is no longer met
+        await prisma.cart.update({
+          where: { id: cartId },
+          data: {
+            couponId: null,
+            discountAmount: 0
+          }
+        });
+        return;
+      }
+      
+      // Calculate discount amount
+      let discountAmount = 0;
+      
+      if (cart.coupon.discountType === 'PERCENTAGE') {
+        discountAmount = subtotal * (parseFloat(cart.coupon.discountValue) / 100);
+        
+        // Apply max discount cap if exists
+        if (cart.coupon.maxDiscountAmount) {
+          discountAmount = Math.min(discountAmount, parseFloat(cart.coupon.maxDiscountAmount));
+        }
+      } else {
+        // FIXED discount
+        discountAmount = parseFloat(cart.coupon.discountValue);
+        
+        // Ensure discount doesn't exceed cart total
+        discountAmount = Math.min(discountAmount, subtotal);
+      }
+      
+      // Update cart with new discount amount
+      await prisma.cart.update({
+        where: { id: cartId },
+        data: {
+          discountAmount
+        }
       });
+      
     } catch (error) {
-      console.error("Error fetching cart:", error);
-      res.status(500).json({ message: "Internal server error" });
+      console.error('Error recalculating cart discount:', error);
+      throw error;
     }
+  }
+
+  app.get('/cart', authenticateUser, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        
+        // Fetch cart with items and product details
+        const cart = await prisma.cart.findFirst({
+          where: { userId },
+          include: {
+            items: {
+              include: {
+                product: {
+                  include: {
+                    images: true
+                  }
+                }
+              }
+            },
+            appliedCoupon: true
+          }
+        });
+        
+        if (!cart) {
+          // Create an empty cart if none exists
+          return res.json({
+            items: [],
+            summary: {
+              subtotal: 0,
+              discount: 0,
+              total: 0,
+              deliveryFee: 200, // Default delivery fee
+              tax: 0
+            }
+          });
+        }
+        
+        // Transform cart items for response
+        const items = cart.items.map(item => ({
+          id: item.id,
+          quantity: item.quantity,
+          product: {
+            id: item.product.id,
+            name: item.product.name,
+            price: parseFloat(item.product.price),
+            discountedPrice: item.product.discountedPrice ? parseFloat(item.product.discountedPrice) : null,
+            images: item.product.images || [],
+            color: item.product.color,
+            size: item.product.size
+          }
+        }));
+        
+        // Calculate cart summary
+        let subtotal = 0;
+        items.forEach(item => {
+          const price = item.product.discountedPrice || item.product.price;
+          subtotal += price * item.quantity;
+        });
+        
+        // Get discount amount (from applied coupon)
+        const discountAmount = parseFloat(cart.discountAmount || 0);
+        
+        // Calculate tax (assuming 5% tax rate)
+        const taxRate = 0.05;
+        const taxAmount = (subtotal - discountAmount) * taxRate;
+        
+        // Calculate total
+        const total = subtotal - discountAmount;
+        
+        // Build response
+        const response = {
+          items,
+          summary: {
+            subtotal,
+            discount: discountAmount,
+            total,
+            deliveryFee: 200, // Default delivery fee
+            tax: taxAmount
+          }
+        };
+        
+        if (cart.coupon) {
+          response.appliedCoupon = {
+            code: cart.coupon.code,
+            discountType: cart.coupon.discountType,
+            discountValue: parseFloat(cart.coupon.discountValue)
+          };
+        }
+        
+        res.json(response);
+        
+      } catch (error) {
+        console.error('Error fetching cart:', error);
+        res.status(500).json({ message: 'Failed to fetch cart' });
+      }
   });
 
 app.put('/cart/item/:itemId', authenticateUser, async (req, res) => {
@@ -875,27 +1017,51 @@ app.put('/cart/item/:itemId', authenticateUser, async (req, res) => {
 });
 
 app.delete('/cart/item/:itemId', authenticateUser, async (req, res) => {
-  try {
-    const { itemId } = req.params;
-    
-    const cartItem = await prisma.cartItem.findUnique({
-      where: { id: Number(itemId) },
-      include: { cart: true }
-    });
-    
-    if (!cartItem || cartItem.cart.userId !== req.user.id) {
-      return res.status(404).json({ message: "Cart item not found" });
-    }
-    
-    await prisma.cartItem.delete({
-      where: { id: Number(itemId) }
-    });
-    
-    res.status(200).json({ message: "Item removed from cart" });
-  } catch (error) {
-    console.error("Error removing cart item:", error);
-    res.status(500).json({ message: "Internal server error" });
-  }
+    try {
+        const userId = req.user.id;
+        const { itemId } = req.params;
+        
+        if (!itemId) {
+          return res.status(400).json({ message: 'Item ID is required' });
+        }
+        
+        // Find user's cart
+        const cart = await prisma.cart.findFirst({
+          where: { userId }
+        });
+        
+        if (!cart) {
+          return res.status(404).json({ message: 'Cart not found' });
+        }
+        
+        // Find the cart item
+        const cartItem = await prisma.cartItem.findFirst({
+          where: {
+            id: parseInt(itemId),
+            cartId: cart.id
+          }
+        });
+        
+        if (!cartItem) {
+          return res.status(404).json({ message: 'Item not found in cart' });
+        }
+        
+        // Remove item from cart
+        await prisma.cartItem.delete({
+          where: { id: parseInt(itemId) }
+        });
+        
+        // Recalculate discounts if a coupon is applied
+        if (cart.couponId) {
+          await recalculateCartDiscount(cart.id);
+        }
+        
+        res.json({ message: 'Item removed from cart' });
+        
+      } catch (error) {
+        console.error('Error removing item from cart:', error);
+        res.status(500).json({ message: 'Failed to remove item from cart' });
+      }
 });
 
 app.delete('/cart', authenticateUser, async (req, res) => {
@@ -917,16 +1083,619 @@ app.delete('/cart', authenticateUser, async (req, res) => {
   }
 });
 
+app.get('/coupons/eligible', authenticateUser, async(req, res) => {
+  try {
+    const userId = req.user.id;
+    const cartTotal = parseFloat(req.query.cartTotal || 0);
+    
+    const currentDate = new Date();
+    
+    const coupons = await prisma.coupon.findMany({
+      where: {
+        isActive: true,
+        startDate: { lte: currentDate },
+        endDate: { gte: currentDate },
+        OR: [
+          { applicableUserIds: { has: userId } },
+          { applicableUserIds: { isEmpty: true } }
+        ]
+      }
+    });
+    
+    const eligibleCoupons = [];
+    
+    for (const coupon of coupons) {
+      // Check usage limit
+      if (coupon.usageLimit !== null && coupon.usageCount >= coupon.usageLimit) {
+        continue; // Skip this coupon
+      }
+      
+      if (coupon.perUserLimit) {
+        const userUsageCount = await prisma.couponUsage.count({
+          where: {
+            couponId: coupon.id,
+            userId: userId
+          }
+        });
+        
+        if (userUsageCount >= coupon.perUserLimit) {
+          continue;
+        }
+      }
+      
+      eligibleCoupons.push({
+        code: coupon.code,
+        description: coupon.description,
+        discountType: coupon.discountType,
+        discountValue: parseFloat(coupon.discountValue),
+        minPurchase: parseFloat(coupon.minPurchaseAmount || 0),
+        maxDiscountAmount: coupon.maxDiscountAmount ? parseFloat(coupon.maxDiscountAmount) : null,
+        expiryDate: coupon.endDate
+      });
+    }
+    
+    res.json(eligibleCoupons);
+  } catch (error) {
+    console.error('Error fetching eligible coupons:', error);
+    res.status(500).json({ message: 'Failed to fetch eligible coupons' });
+  }
+})
+
+app.get('/cart/coupon', authenticateUser, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        
+        // Get user's cart with coupon
+        const cart = await prisma.cart.findFirst({
+          where: { userId },
+          include: {
+            appliedCoupon: true
+          }
+        });
+        
+        if (!cart || !cart.couponId) {
+          return res.status(404).json({ message: 'No coupon applied to cart' });
+        }
+        
+        const couponResponse = {
+          id: cart.coupon.id,
+          code: cart.coupon.code,
+          description: cart.coupon.description,
+          discountType: cart.coupon.discountType,
+          discountValue: parseFloat(cart.coupon.discountValue),
+          maxDiscountAmount: cart.coupon.maxDiscountAmount ? parseFloat(cart.coupon.maxDiscountAmount) : null,
+        };
+        
+        res.json({ 
+          coupon: couponResponse,
+          discountAmount: parseFloat(cart.discountAmount || 0)
+        });
+        
+      } catch (error) {
+        console.error('Error fetching applied coupon:', error);
+        res.status(500).json({ message: 'Failed to fetch applied coupon' });
+      }
+  });
+
+app.post('/cart/coupon', authenticateUser, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { code } = req.body;
+        
+        if (!code) {
+          return res.status(400).json({ message: 'Coupon code is required' });
+        }
+        
+        // Find the coupon
+        const coupon = await prisma.coupon.findUnique({
+          where: { code }
+        });
+        
+        if (!coupon) {
+          return res.status(404).json({ message: 'Coupon not found' });
+        }
+        
+        // Verify coupon is active and valid date range
+        const currentDate = new Date();
+        if (!coupon.isActive || coupon.startDate > currentDate || coupon.endDate < currentDate) {
+          return res.status(400).json({ message: 'This coupon is not valid at this time' });
+        }
+        
+        // Check if coupon has reached usage limit
+        if (coupon.usageLimit !== null && coupon.usageCount >= coupon.usageLimit) {
+          return res.status(400).json({ message: 'This coupon has reached its usage limit' });
+        }
+        
+        // Check if user is eligible
+        if (coupon.applicableUserIds.length > 0 && !coupon.applicableUserIds.includes(userId)) {
+          return res.status(400).json({ message: 'This coupon is not applicable for your account' });
+        }
+        
+        // Check if user has reached their personal usage limit
+        if (coupon.perUserLimit !== null) {
+          const userUsageCount = await prisma.couponUsage.count({
+            where: {
+              couponId: coupon.id,
+              userId
+            }
+          });
+          
+          if (userUsageCount >= coupon.perUserLimit) {
+            return res.status(400).json({ message: 'You have already used this coupon the maximum number of times' });
+          }
+        }
+        
+        // Get user's cart
+        const cart = await prisma.cart.findFirst({
+          where: { userId },
+          include: {
+            items: {
+              include: {
+                product: true
+              }
+            }
+          }
+        });
+        
+        if (!cart || cart.items.length === 0) {
+          return res.status(400).json({ message: 'Your cart is empty' });
+        }
+        
+        // Calculate cart subtotal
+        const subtotal = cart.items.reduce((total, item) => {
+          const price = item.product.discountedPrice || item.product.price;
+          return total + (parseFloat(price) * item.quantity);
+        }, 0);
+        
+        // Check minimum purchase amount
+        if (coupon.minPurchaseAmount && subtotal < parseFloat(coupon.minPurchaseAmount)) {
+          return res.status(400).json({ 
+            message: `Minimum purchase amount of ₹${parseFloat(coupon.minPurchaseAmount).toFixed(2)} required for this coupon` 
+          });
+        }
+        
+        // Check product and category eligibility if specified
+        if (coupon.applicableProductIds.length > 0 || coupon.applicableCategories.length > 0) {
+          const isEligible = cart.items.some(item => {
+            const productEligible = coupon.applicableProductIds.length === 0 || 
+                                   coupon.applicableProductIds.includes(item.product.id);
+            
+            const categoryEligible = coupon.applicableCategories.length === 0 || 
+                                    coupon.applicableCategories.some(category => 
+                                      item.product.categories.includes(category));
+            
+            return productEligible || categoryEligible;
+          });
+          
+          if (!isEligible) {
+            return res.status(400).json({ message: 'This coupon is not applicable for the items in your cart' });
+          }
+        }
+        
+        // Calculate discount amount
+        let discountAmount = 0;
+        
+        if (coupon.discountType === 'PERCENTAGE') {
+          discountAmount = subtotal * (parseFloat(coupon.discountValue) / 100);
+          
+          // Apply max discount cap if exists
+          if (coupon.maxDiscountAmount) {
+            discountAmount = Math.min(discountAmount, parseFloat(coupon.maxDiscountAmount));
+          }
+        } else {
+          // FIXED discount
+          discountAmount = parseFloat(coupon.discountValue);
+          
+          // Ensure discount doesn't exceed cart total
+          discountAmount = Math.min(discountAmount, subtotal);
+        }
+        
+        // Update cart with coupon
+        await prisma.cart.update({
+          where: { id: cart.id },
+          data: {
+            couponId: coupon.id,
+            discountAmount
+          }
+        });
+        
+        // Format response
+        const couponResponse = {
+          id: coupon.id,
+          code: coupon.code,
+          description: coupon.description,
+          discountType: coupon.discountType,
+          discountValue: parseFloat(coupon.discountValue),
+          maxDiscountAmount: coupon.maxDiscountAmount ? parseFloat(coupon.maxDiscountAmount) : null,
+        };
+        
+        res.json({ 
+          message: 'Coupon applied successfully',
+          coupon: couponResponse,
+          discountAmount
+        });
+        
+      } catch (error) {
+        console.error('Error applying coupon:', error);
+        res.status(500).json({ message: 'Failed to apply coupon' });
+      }
+  });
+
+function calculateCartSummary(items, appliedCoupon) {
+    const subtotal = items.reduce((sum, item) => {
+      const itemPrice = Number(item.flashSalePrice || item.product.price);
+      return sum + (itemPrice * item.quantity);
+    }, 0);
+
+    let discount = 0;
+    
+    if (appliedCoupon) {
+      if (appliedCoupon.discountType === 'PERCENTAGE') {
+        discount = (subtotal * Number(appliedCoupon.discountValue)) / 100;
+        
+        // Apply max discount cap if exists
+        if (appliedCoupon.maxDiscountAmount) {
+          discount = Math.min(discount, Number(appliedCoupon.maxDiscountAmount));
+        }
+      } else {
+        discount = Number(appliedCoupon.discountValue);
+      }
+    }
+
+    const total = Math.max(subtotal - discount, 0);
+    
+    const tax = 0;
+    
+    const deliveryFee = 200; // ₹200 standard delivery fee
+    
+    return {
+      subtotal,
+      discount,
+      total,
+      deliveryFee,
+      tax
+    };
+  }
+
+  app.delete('/cart/coupon', authenticateUser, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        
+        // Get user's cart
+        const cart = await prisma.cart.findFirst({
+          where: { userId }
+        });
+        
+        if (!cart) {
+          return res.status(404).json({ message: 'Cart not found' });
+        }
+        
+        // Check if cart has a coupon
+        if (!cart.couponId) {
+          return res.status(400).json({ message: 'No coupon applied to remove' });
+        }
+        
+        // Update cart to remove coupon
+        await prisma.cart.update({
+          where: { id: cart.id },
+          data: {
+            couponId: null,
+            discountAmount: 0
+          }
+        });
+        
+        res.json({ message: 'Coupon removed successfully' });
+        
+      } catch (error) {
+        console.error('Error removing coupon:', error);
+        res.status(500).json({ message: 'Failed to remove coupon' });
+      }
+  });
+
+// Assuming this is the endpoint for adding items to the wishlist
+app.post('/wishlist/add', authenticateUser, async (req, res) => {
+    try {
+      const { productId } = req.body;
+      const userId = req.user.id;
+      
+      if (!productId) {
+        return res.status(400).json({ error: 'Product ID is required' });
+      }
+      
+      // Check if the product exists
+      const product = await prisma.product.findUnique({
+        where: { id: parseInt(productId) }
+      });
+      
+      if (!product) {
+        return res.status(404).json({ error: 'Product not found' });
+      }
+      
+      // Get or create user's wishlist
+      let wishlist = await prisma.wishlist.findUnique({
+        where: { userId }
+      });
+      
+      if (!wishlist) {
+        wishlist = await prisma.wishlist.create({
+          data: { 
+            userId,
+            updatedAt: new Date() // Ensure updatedAt is set correctly
+          }
+        });
+      }
+      
+      // Check if product already in wishlist
+      const existingItem = await prisma.wishlistItem.findUnique({
+        where: {
+          wishlistId_productId: {
+            wishlistId: wishlist.id,
+            productId: parseInt(productId)
+          }
+        }
+      });
+      
+      if (existingItem) {
+        return res.json({ 
+          success: true, 
+          message: 'Product already in wishlist',
+          wishlistId: wishlist.id
+        });
+      }
+      
+      // Add to wishlist
+      await prisma.wishlistItem.create({
+        data: {
+          wishlistId: wishlist.id,
+          productId: parseInt(productId),
+          createdAt: new Date(),
+          updatedAt: new Date()
+        }
+      });
+      
+      // Update the wishlist's updatedAt timestamp
+      await prisma.wishlist.update({
+        where: { id: wishlist.id },
+        data: { updatedAt: new Date() }
+      });
+      
+      res.json({ 
+        success: true, 
+        message: 'Product added to wishlist',
+        wishlistId: wishlist.id
+      });
+      
+    } catch (error) {
+      console.error('Error adding to wishlist:', error);
+      res.status(500).json({ error: 'Failed to add to wishlist' });
+    }
+  });
+  
+  // Endpoint to get the wishlist items
+  app.get('/wishlist', authenticateUser, async (req, res) => {
+    try {
+      const userId = req.user.id;
+      
+      const wishlist = await prisma.wishlist.findUnique({
+        where: { userId },
+        include: {
+          items: {
+            include: {
+              product: {
+                include: {
+                  images: true
+                }
+              }
+            }
+          }
+        }
+      });
+      
+      if (!wishlist) {
+        return res.json({ items: [] });
+      }
+      
+      res.json({ 
+        items: wishlist.items,
+        wishlistId: wishlist.id
+      });
+      
+    } catch (error) {
+      console.error('Error fetching wishlist:', error);
+      res.status(500).json({ error: 'Failed to fetch wishlist' });
+    }
+  });
+
+  app.get('/wishlist/check/:id', authenticateUser, async(req, res) => {
+    try {
+      const userId = req.user.id;
+      const productId = parseInt(req.params.id);
+      
+      const wishlist = await prisma.wishlist.findUnique({
+        where: { userId },
+        include: {
+          items: {
+            where: {
+              productId: productId
+            }
+          }
+        }
+      });
+  
+      const isInWishlist = wishlist && wishlist.items.length > 0;
+  
+      return res.json({
+        isInWishlist: isInWishlist
+      });
+    } catch (err) {
+      console.error('Error checking wishlist status:', err);
+      return res.status(500).json({ message: 'Server error' });
+    }
+  });
+
+  app.get('/wishlist/items', authenticateUser, async (req, res) => {
+    try {
+        const userId = req.user.id;
+    
+        const wishlistItems = await prisma.wishlist.findUnique({
+            where: { userId },
+            include: {
+              items: {
+                include: {
+                  product: {
+                    include: {
+                      images: true
+                    }
+                  }
+                }
+              }
+            }
+        });
+    
+        return res.json(wishlistItems);
+      } catch (err) {
+        console.error('Error fetching wishlist items:', err);
+        return res.status(500).json({ message: 'Server error' });
+      }
+  })
+
+  app.delete('/wishlist/remove', authenticateUser, async (req, res) => {
+    try {
+      const { productId } = req.body;
+      const userId = req.user.id;
+      
+      if (!productId) {
+        return res.status(400).json({ error: 'Product ID is required' });
+      }
+      
+      const wishlist = await prisma.wishlist.findUnique({
+        where: { userId }
+      });
+      
+      if (!wishlist) {
+        return res.status(404).json({ error: 'Wishlist not found' });
+      }
+      
+      await prisma.wishlistItem.deleteMany({
+        where: {
+          wishlistId: wishlist.id,
+          productId: parseInt(productId)
+        }
+      });
+      
+      // Update the wishlist's updatedAt timestamp
+      await prisma.wishlist.update({
+        where: { id: wishlist.id },
+        data: { updatedAt: new Date() }
+      });
+      
+      res.json({ success: true, message: 'Product removed from wishlist' });
+      
+    } catch (error) {
+      console.error('Error removing from wishlist:', error);
+      res.status(500).json({ error: 'Failed to remove from wishlist' });
+    }
+  });
+
+app.get('/user/addresses', authenticateUser, async(req, res) => {
+    try {
+        const addresses = await prisma.address.findMany({
+          where: { userId: req.user.id },
+          orderBy: [
+            { isDefault: 'desc' },
+            { updatedAt: 'desc' }
+          ]
+        });
+        
+        res.status(200).json(addresses);
+      } catch (error) {
+        console.error('Error fetching addresses:', error);
+        res.status(500).json({ message: 'Failed to fetch addresses' });
+      }
+})
+
+app.post('/user/addresses', authenticateUser, async(req,res) => {
+    try {
+        const { name, line1, line2, city, state, postalCode, country, phone, isDefault } = req.body;
+
+        if (!name || !line1 || !city || !state || !postalCode || !phone) {
+          return res.status(400).json({ message: 'Missing required fields' });
+        }
+        
+        const result = await prisma.$transaction(async (tx) => {
+          if (isDefault) {
+            await tx.address.updateMany({
+              where: { 
+                userId: req.user.id,
+                isDefault: true 
+              },
+              data: { isDefault: false }
+            });
+          }
+          
+          const addressCount = await tx.address.count({
+            where: { userId: req.user.id }
+          });
+          
+          return tx.address.create({
+            data: {
+              userId: req.user.id,
+              name,
+              line1,
+              line2: line2 || '',
+              city,
+              state,
+              postalCode,
+              country: country || 'India',
+              phone,
+              isDefault: isDefault || addressCount === 0
+            }
+          });
+        });
+        
+        res.status(201).json(result);
+      } catch (error) {
+        console.error('Error creating address:', error);
+        res.status(500).json({ message: 'Failed to create address' });
+      }
+})
+
 app.post('/create-order', authenticateUser, async (req, res) => {
     try {
-      const { amount, currency = 'INR', receipt, useWallet, walletAmount = 0 } = req.body;
+      const { 
+        amount, 
+        currency = 'INR', 
+        receipt, 
+        useWallet, 
+        walletAmount = 0,
+        addressId,
+        shippingAddress,
+        notes
+      } = req.body;
   
-      // Validate input
       if (!amount || !receipt) {
         return res.status(400).json({ message: "Amount and receipt are required" });
       }
   
-      // Check wallet balance if using wallet
+      let address;
+      
+      if (addressId) {
+        address = await prisma.address.findUnique({
+          where: { 
+            id: parseInt(addressId),
+            userId: req.user.id
+          }
+        });
+  
+        if (!address) {
+          return res.status(400).json({ message: "Invalid address selected" });
+        }
+      } else if (shippingAddress) {
+        address = shippingAddress;
+      } else {
+        return res.status(400).json({ message: "Address information is required" });
+      }
+  
       if (useWallet) {
         const wallet = await prisma.wallet.findUnique({
           where: { userId: req.user.id }
@@ -934,164 +1703,193 @@ app.post('/create-order', authenticateUser, async (req, res) => {
   
         if (!wallet || wallet.balance < walletAmount) {
           return res.status(400).json({ 
-            message: "Insufficient wallet balance" 
+            message: "Insufficient wallet balance"
           });
         }
       }
   
-      // Create order with Razorpay
+      const razorpayNotes = {
+        shipping_address: JSON.stringify({
+          name: address.name,
+          line1: address.line1,
+          line2: address.line2 || '',
+          city: address.city,
+          state: address.state,
+          postal_code: address.postalCode || address.postal_code || address.zip,
+          country: address.country,
+          phone: address.phone
+        })
+      };
+      
+      if (notes && typeof notes === 'object' && notes.custom_notes) {
+        razorpayNotes.custom_notes = notes.custom_notes;
+      } else if (typeof notes === 'string') {
+        razorpayNotes.custom_notes = notes;
+      }
+  
       const options = {
-        amount: amount * 100, // Convert to paisa
-        currency: currency,
-        receipt: receipt,
-        payment_capture: 1 // Auto-capture payment
+          amount: amount * 100,
+          currency: currency,
+          receipt: receipt,
+          payment_capture: 1,
+          notes: razorpayNotes
       };
   
-      const order = await razorpay.orders.create(options);
+      const razorpayOrder = await razorpay.orders.create(options);
   
-      // Save order details in database with wallet info
-      await prisma.order.create({
+      const notesForPrisma = typeof notes === 'object' ? 
+        JSON.stringify(notes) : 
+        (notes || null);
+  
+      const order = await prisma.order.create({
         data: {
           userId: req.user.id,
-          razorpayOrderId: order.id,
+          razorpayOrderId: razorpayOrder.id,
           amount: amount,
           status: 'INITIATED',
           currency: currency,
           useWallet: useWallet || false,
-          walletAmount: walletAmount || 0
+          walletAmount: walletAmount || 0,
+          notes: notesForPrisma,
+          shippingAddress: {
+            create: {
+              name: address.name,
+              line1: address.line1,
+              line2: address.line2 || '',
+              city: address.city,
+              state: address.state,
+              postalCode: address.postalCode || address.postal_code || address.zip,
+              country: address.country,
+              phone: address.phone
+            }
+          }
         }
       });
   
       res.status(200).json({
-        id: order.id,
-        amount: order.amount,
-        currency: order.currency
+        id: razorpayOrder.id,
+        amount: razorpayOrder.amount,
+        currency: razorpayOrder.currency,
+        orderId: order.id
       });
     } catch (error) {
       console.error("Error creating Razorpay order:", error);
       res.status(500).json({ message: "Failed to create order" });
     }
   });
-  
-  app.post('/verify-payment', authenticateUser, async (req, res) => {
-    try {
-      const { 
-        razorpay_order_id, 
-        razorpay_payment_id, 
-        razorpay_signature,
-        useWallet,
-        walletAmount = 0
-      } = req.body;
-  
-      // Validate input
-      if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
-        return res.status(400).json({ 
-          status: 'error', 
-          message: "Missing payment details" 
-        });
-      }
-  
-      // Verify signature
-      const generated_signature = crypto
-        .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-        .update(razorpay_order_id + "|" + razorpay_payment_id)
-        .digest('hex');
-  
-      if (generated_signature !== razorpay_signature) {
-        return res.status(400).json({ 
-          status: 'error', 
-          message: "Invalid payment signature" 
-        });
-      }
-  
-      // Find the order
-      const order = await prisma.order.findUnique({
-        where: { razorpayOrderId: razorpay_order_id }
-      });
-  
-      if (!order) {
-        return res.status(404).json({ 
-          status: 'error', 
-          message: "Order not found" 
-        });
-      }
-  
-      // Process wallet deduction if used
-      if (useWallet && walletAmount > 0) {
-        const wallet = await prisma.wallet.findUnique({
-          where: { userId: req.user.id }
-        });
-  
-        if (!wallet || wallet.balance < walletAmount) {
-          return res.status(400).json({ 
-            status: 'error', 
-            message: "Insufficient wallet balance" 
-          });
-        }
-  
-        // Deduct from wallet
-        await prisma.wallet.update({
-          where: { userId: req.user.id },
-          data: { balance: { decrement: walletAmount } }
-        });
-  
-        // Record wallet transaction
-        await prisma.transaction.create({
-          data: {
-            walletId: wallet.id,
-            amount: walletAmount,
-            type: 'debit',
-            description: `Order payment: ${order.id}`
-          }
-        });
-      }
-  
-      // Update order status
-      await prisma.order.update({
-        where: { razorpayOrderId: razorpay_order_id },
-        data: {
-          status: 'PAID',
-          razorpayPaymentId: razorpay_payment_id,
-          razorpaySignature: razorpay_signature
-        }
-      });
-  
-      // Process cart items
-      const cart = await prisma.cart.findUnique({
-        where: { userId: req.user.id },
-        include: { items: { include: { product: true } } }
-      });
-  
-      if (cart && cart.items.length > 0) {
-        // Create order items
-        await prisma.orderItem.createMany({
-          data: cart.items.map(item => ({
-            orderId: order.id,
-            productId: item.productId,
-            quantity: item.quantity,
-            price: item.product.discountedPrice || item.product.price
-          }))
-        });
-  
-        // Clear the cart
-        await prisma.cartItem.deleteMany({
-          where: { cartId: cart.id }
-        });
-      }
-  
-      res.status(200).json({ 
-        status: 'success', 
-        message: "Payment verified successfully",
-        orderId: order.id
-      });
-    } catch (error) {
-      console.error("Error verifying payment:", error);
-      res.status(500).json({ 
+
+app.post('/verify-payment', authenticateUser, async (req, res) => {
+  try {
+    const { 
+      razorpay_order_id, 
+      razorpay_payment_id, 
+      razorpay_signature,
+      useWallet,
+      walletAmount = 0
+    } = req.body;
+
+    // Validate input
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ 
         status: 'error', 
-        message: "Payment verification failed" 
+        message: "Missing payment details" 
       });
     }
-  });
+
+    // Verify signature
+    const generated_signature = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(razorpay_order_id + "|" + razorpay_payment_id)
+      .digest('hex');
+
+    if (generated_signature !== razorpay_signature) {
+      return res.status(400).json({ 
+        status: 'error', 
+        message: "Invalid payment signature" 
+      });
+    }
+
+    const order = await prisma.order.findUnique({
+      where: { razorpayOrderId: razorpay_order_id },
+      include: { shippingAddress: true }
+    });
+
+    if (!order) {
+      return res.status(404).json({ 
+        status: 'error', 
+        message: "Order not found" 
+      });
+    }
+
+    if (useWallet && walletAmount > 0) {
+      const wallet = await prisma.wallet.findUnique({
+        where: { userId: req.user.id }
+      });
+
+      if (!wallet || wallet.balance < walletAmount) {
+        return res.status(400).json({ 
+          status: 'error', 
+          message: "Insufficient wallet balance" 
+        });
+      }
+
+      await prisma.wallet.update({
+        where: { userId: req.user.id },
+        data: { balance: { decrement: walletAmount } }
+      });
+
+      await prisma.transaction.create({
+        data: {
+          walletId: wallet.id,
+          amount: walletAmount,
+          type: 'debit',
+          description: `Order payment: ${order.id}`
+        }
+      });
+    }
+
+    await prisma.order.update({
+      where: { razorpayOrderId: razorpay_order_id },
+      data: {
+        status: 'PAID',
+        razorpayPaymentId: razorpay_payment_id,
+        razorpaySignature: razorpay_signature
+      }
+    });
+
+    const cart = await prisma.cart.findUnique({
+      where: { userId: req.user.id },
+      include: { items: { include: { product: true } } }
+    });
+
+    if (cart && cart.items.length > 0) {
+      await prisma.orderItem.createMany({
+        data: cart.items.map(item => ({
+          orderId: order.id,
+          productId: item.productId,
+          quantity: item.quantity,
+          price: item.product.discountedPrice || item.product.price
+        }))
+      });
+
+      await prisma.cartItem.deleteMany({
+        where: { cartId: cart.id }
+      });
+    }
+
+    res.status(200).json({ 
+      status: 'success', 
+      message: "Payment verified successfully",
+      orderId: order.id
+    });
+  } catch (error) {
+    console.error("Error verifying payment:", error);
+    res.status(500).json({ 
+      status: 'error', 
+      message: "Payment verification failed" 
+    });
+  }
+});
 
 app.get('/orders', authenticateUser, async (req,res) => {
     try {
@@ -1155,8 +1953,8 @@ app.get('/order/:orderId',authenticateUser, async (req,res) => {
     
         const summary = {
           total: order.orderItems.reduce((sum, item) => sum + (item.price * item.quantity), 0),
-          deliveryFee: 50, // Example fixed delivery fee
-          tax: order.orderItems.reduce((sum, item) => sum + (item.price * item.quantity * 0.1), 0) // 10% tax example
+          deliveryFee: 50,
+          tax: order.orderItems.reduce((sum, item) => sum + (item.price * item.quantity * 0.1), 0)
         };
     
         res.status(200).json({ ...order, summary });
@@ -1168,6 +1966,7 @@ app.get('/order/:orderId',authenticateUser, async (req,res) => {
 
 app.get('/orders/latest', authenticateUser, async (req, res) => {
     try {
+        // Find the most recent order for the authenticated user
         const latestOrder = await prisma.order.findFirst({
             where: { 
                 userId: req.user.id 
@@ -1185,6 +1984,7 @@ app.get('/orders/latest', authenticateUser, async (req, res) => {
                         }
                     }
                 },
+                shippingAddress: true,
                 user: {
                     select: {
                         email: true,
@@ -1197,110 +1997,240 @@ app.get('/orders/latest', authenticateUser, async (req, res) => {
 
         if (!latestOrder) {
             return res.status(404).json({ 
-                success: false,
                 message: "No orders found for this user" 
             });
         }
 
-        // Calculate order values
+        // Calculate order summary
         const subtotal = latestOrder.orderItems.reduce(
             (sum, item) => sum + (item.price * item.quantity), 
             0
         );
         
-        const taxRate = 0.1; // 10% tax
-        const deliveryFee = 50;
-        const tax = subtotal * taxRate;
-        const total = subtotal + tax + deliveryFee - (latestOrder.walletAmount || 0);
+        const tax = subtotal * 0.1; // 10% tax example
+        const deliveryFee = 50; // Fixed delivery fee
+        const total = subtotal + tax + deliveryFee - 
+                     (latestOrder.walletAmount || 0);
 
-        // Prepare clean response object
+        // Format the response to match frontend expectations
         const response = {
-            success: true,
-            data: {
-                orderId: latestOrder.id,
-                orderNumber: `ORD-${latestOrder.id.toString().padStart(6, '0')}`,
-                date: latestOrder.createdAt.toISOString(),
-                payment: {
-                    method: latestOrder.razorpayPaymentId ? 'Online' : 'Wallet',
-                    status: latestOrder.status,
-                    walletUsed: latestOrder.walletAmount || 0
-                },
-                summary: {
-                    subtotal: parseFloat(subtotal.toFixed(2)),
-                    delivery: deliveryFee,
-                    tax: parseFloat(tax.toFixed(2)),
-                    total: parseFloat(total.toFixed(2))
-                },
-                items: latestOrder.orderItems.map(item => ({
-                    itemId: item.id,
-                    quantity: item.quantity,
-                    unitPrice: item.price,
-                    product: {
-                        id: item.product.id,
-                        name: item.product.name,
-                        image: item.product.images[0]?.mainImage || null
-                    }
-                })),
-                customer: {
-                    email: latestOrder.user.email,
-                    name: `${latestOrder.user.firstName} ${latestOrder.user.lastName}`
+            id: latestOrder.id,
+            orderNumber: `ORD-${latestOrder.id.toString().padStart(6, '0')}`,
+            createdAt: latestOrder.createdAt,
+            paymentMethod: latestOrder.razorpayPaymentId ? 'Online Payment' : 'Wallet',
+            status: latestOrder.status,
+            discount: 0, // Add if you have discounts
+            walletAmountUsed: latestOrder.walletAmount || 0,
+            subtotal: parseFloat(subtotal.toFixed(2)),
+            deliveryFee: deliveryFee,
+            tax: parseFloat(tax.toFixed(2)),
+            total: parseFloat(total.toFixed(2)),
+            items: latestOrder.orderItems.map(item => ({
+                id: item.id,
+                quantity: item.quantity,
+                price: item.price,
+                product: {
+                    id: item.product.id,
+                    name: item.product.name,
+                    image: item.product.images[0]?.mainImage || null
                 }
+            })),
+            shippingAddress: latestOrder.shippingAddress || {
+                name: `${latestOrder.user.firstName} ${latestOrder.user.lastName}`,
+                line1: 'Not specified',
+                line2: 'Not specified',
+                city: 'Not specified',
+                state: 'Not specified',
+                postalCode: '000000',
+                country: 'India',
+                phone: 'Not specified'
+            },
+            customer: {
+                email: latestOrder.user.email,
+                name: `${latestOrder.user.firstName} ${latestOrder.user.lastName}`
             }
         };
 
         res.status(200).json(response);
     } catch (error) {
-        console.error("Order fetch error:", error);
+        console.error("Error fetching latest order:", error);
         res.status(500).json({ 
-            success: false,
-            message: "Failed to retrieve order details",
-            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+            message: "Failed to fetch latest order", 
+            error: error.message 
         });
     }
 });
 
 
 app.post('/wallet/create-order', authenticateUser, async (req, res) => {
-    try {
-      const { amount, currency = 'INR' } = req.body;
-  
-      // Validate input
-      if (!amount || amount <= 0) {
-        return res.status(400).json({ message: "Invalid amount" });
+    const { 
+        useWallet, 
+        walletAmount, 
+        shippingAddress, 
+        notes 
+      } = orderData;
+      
+      try {
+        // Start a transaction
+        return await prisma.$transaction(async (prisma) => {
+          // Get user's cart with items
+          const cart = await prisma.cart.findFirst({
+            where: { userId },
+            include: {
+              items: {
+                include: {
+                  product: true
+                }
+              },
+              coupon: true
+            }
+          });
+          
+          if (!cart || cart.items.length === 0) {
+            throw new Error('Cart is empty');
+          }
+          
+          // Calculate order summary
+          let subtotal = 0;
+          const orderItems = cart.items.map(item => {
+            const price = item.product.discountedPrice || item.product.price;
+            const itemTotal = parseFloat(price) * item.quantity;
+            subtotal += itemTotal;
+            
+            return {
+              productId: item.productId,
+              quantity: item.quantity,
+              price: parseFloat(price),
+              total: itemTotal
+            };
+          });
+          
+          // Get discount amount from coupon
+          const discountAmount = parseFloat(cart.discountAmount || 0);
+          
+          // Calculate tax
+          const taxRate = 0.05; // 5%
+          const taxAmount = (subtotal - discountAmount) * taxRate;
+          
+          // Default delivery fee
+          const deliveryFee = 200;
+          
+          // Calculate total
+          const totalBeforeWallet = subtotal - discountAmount + deliveryFee + taxAmount;
+          
+          // Apply wallet if requested
+          let walletApplied = 0;
+          if (useWallet && walletAmount > 0) {
+            // Get actual wallet balance
+            const wallet = await prisma.wallet.findUnique({
+              where: { userId }
+            });
+            
+            if (wallet) {
+              // Calculate amount to deduct from wallet (can't exceed total or wallet balance)
+              walletApplied = Math.min(
+                parseFloat(wallet.balance),
+                parseFloat(walletAmount),
+                totalBeforeWallet
+              );
+              
+              // Update wallet balance
+              if (walletApplied > 0) {
+                await prisma.wallet.update({
+                  where: { userId },
+                  data: {
+                    balance: {
+                      decrement: walletApplied
+                    }
+                  }
+                });
+                
+                // Create wallet transaction record
+                await prisma.walletTransaction.create({
+                  data: {
+                    userId,
+                    amount: -walletApplied,
+                    type: 'PURCHASE',
+                    description: 'Used for order payment',
+                    status: 'COMPLETED'
+                  }
+                });
+              }
+            }
+          }
+          
+          // Final amount to be paid
+          const finalAmount = Math.max(totalBeforeWallet - walletApplied, 0);
+          
+          // Create Razorpay order
+          const razorpayOrder = await razorpay.createOrder({
+            amount: finalAmount,
+            currency: 'INR',
+            receipt: `order_${Date.now()}`
+          });
+          
+          // Create order record in database
+          const order = await prisma.order.create({
+            data: {
+              userId,
+              razorpayOrderId: razorpayOrder.id,
+              subtotal,
+              discount: discountAmount,
+              tax: taxAmount,
+              deliveryFee,
+              walletAmount: walletApplied,
+              total: finalAmount,
+              couponId: cart.couponId,
+              status: 'PENDING',
+              paymentStatus: 'PENDING',
+              shippingAddress: {
+                create: {
+                  name: shippingAddress.name,
+                  line1: shippingAddress.line1,
+                  line2: shippingAddress.line2,
+                  city: shippingAddress.city,
+                  state: shippingAddress.state,
+                  postalCode: shippingAddress.postalCode,
+                  country: shippingAddress.country,
+                  phone: shippingAddress.phone
+                }
+              },
+              items: {
+                create: orderItems.map(item => ({
+                  productId: item.productId,
+                  quantity: item.quantity,
+                  price: item.price,
+                  total: item.total
+                }))
+              },
+              notes
+            }
+          });
+          
+          // If a coupon was used, record its usage (but don't increment coupon.usageCount yet)
+          if (cart.couponId) {
+            await prisma.couponUsage.create({
+              data: {
+                couponId: cart.couponId,
+                userId,
+                orderId: order.id
+              }
+            });
+          }
+          
+          // Return order info with Razorpay details
+          return {
+            id: razorpayOrder.id,
+            amount: finalAmount,
+            currency: razorpayOrder.currency,
+            orderId: order.id
+          };
+        });
+        
+      } catch (error) {
+        console.error('Error creating order:', error);
+        throw error;
       }
-  
-      // Generate a unique receipt
-      const receipt = `wallet_topup_${req.user.id}_${Date.now()}`;
-  
-      // Create Razorpay order
-      const options = {
-        amount: amount * 100,
-        currency: currency,
-        receipt: receipt,
-        payment_capture: 1 // Auto-capture payment
-      };
-      const order = await razorpay.orders.create(options);
-  
-      // Save order details in database
-      await prisma.walletOrder.create({
-        data: {
-          userId: req.user.id,
-          razorpayOrderId: order.id,
-          amount: amount,
-          status: 'INITIATED',
-          currency: currency
-        }
-      });
-  
-      res.status(200).json({
-        id: order.id,
-        amount: order.amount,
-        currency: order.currency
-      });
-    } catch (error) {
-      console.error("Error creating Razorpay wallet top-up order:", error);
-      res.status(500).json({ message: "Failed to create wallet top-up order" });
-    }
   });
   
   // Verify Razorpay payment for wallet top-up
