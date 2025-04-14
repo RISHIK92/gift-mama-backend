@@ -8,6 +8,7 @@ import { signInSchema, signUpSchema } from "../utils/types/zodTypes.js";
 import { authenticateUser } from "../auth/middleware.js";
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
+import { s3Client, PutObjectCommand, BUCKET_NAME, upload, uuidv4 } from "./s3.js";
 
 dotenv.config();
 
@@ -280,6 +281,162 @@ app.get('/products', async (req, res) => {
 //     }
 // });
 
+app.post('/cart/add-customized', authenticateUser, async (req, res) => {
+  try {
+    const { productId, items } = req.body;
+    
+    // Get user's cart or create new one
+    let cart = await prisma.cart.findUnique({
+      where: { userId: req.user.id }
+    });
+
+    if (!cart) {
+      cart = await prisma.cart.create({
+        data: { userId: req.user.id }
+      });
+    }
+
+    // Add item to cart with customization details
+    const cartItem = await prisma.cartItem.create({
+      data: {
+        cartId: cart.id,
+        productId: parseInt(productId),
+        quantity: 1,
+        customizationDetails: items.map(item => ({
+          maskId: item.customizations.maskId,
+          uploadId: item.customizations.uploadId,
+          position: item.customizations.position,
+          scale: item.customizations.scale,
+          rotation: item.customizations.rotation
+        })),
+        customizationImageUrls: items.map(item => item.customizations.imageUrl)
+      }
+    });
+
+    res.json(cartItem);
+  } catch (error) {
+    console.error('Error adding customized product to cart:', error);
+    res.status(500).json({ message: 'Error adding customized product to cart' });
+  }
+});
+
+app.post('/upload/custom-image', authenticateUser, async (req, res) => {
+  try {
+    const { productId, maskId, position, scale, rotation } = req.body;
+    const file = req.files?.image;
+
+    if (!file) {
+      return res.status(400).json({ message: 'No image file provided' });
+    }
+
+    // Upload to S3
+    const key = `custom-uploads/${productId}/${maskId}/${Date.now()}-${file.name}`;
+    const uploadParams = {
+      Bucket: BUCKET_NAME,
+      Key: key,
+      Body: file.data,
+      ContentType: file.mimetype
+    };
+
+    await s3Client.send(new PutObjectCommand(uploadParams));
+    const imageUrl = `https://${BUCKET_NAME}.s3.amazonaws.com/${key}`;
+
+    // Save to database
+    const customUpload = await prisma.customUpload.create({
+      data: {
+        productId: parseInt(productId),
+        maskId: parseInt(maskId),
+        userId: req.user.id,
+        imageUrl,
+        position: position,
+        scale: parseFloat(scale),
+        rotation: parseFloat(rotation)
+      }
+    });
+
+    res.json({
+      imageUrl,
+      uploadId: customUpload.id,
+      maskDetails: {
+        position: position,
+        scale: scale,
+        rotation: rotation
+      }
+    });
+  } catch (error) {
+    console.error('Error uploading custom image:', error);
+    res.status(500).json({ message: 'Error uploading custom image' });
+  }
+});
+
+app.get('/products/:id/masks', async (req, res) => {
+  try {
+    const productId = parseInt(req.params.id);
+    
+    const productMasks = await prisma.productMask.findMany({
+      where: { productId },
+      include: { mask: true }
+    });
+
+    const masks = productMasks.map(pm => pm.mask);
+    
+    res.status(200).json(masks);
+  } catch (error) {
+    console.error('Error fetching product masks:', error);
+    res.status(500).json({ message: 'Failed to fetch product masks' });
+  }
+});
+
+app.post('/upload/custom-image-direct', authenticateUser, upload.single('image'), async (req, res) => {
+  try {
+    const { productId } = req.body;
+    const userId = req.user.id;
+    const file = req.file;
+    
+    if (!file || !productId) {
+      return res.status(400).json({ message: 'Image and product ID are required' });
+    }
+    
+    // Upload to S3 using the AWS SDK v3 pattern
+    const fileName = `customizations/${userId}/${productId}/direct/${uuidv4()}.png`;
+    const params = {
+      Bucket: BUCKET_NAME,
+      Key: fileName,
+      Body: file.buffer,
+      ContentType: file.mimetype
+    };
+    
+    // Use send command pattern
+    const uploadCommand = new PutObjectCommand(params);
+    await s3Client.send(uploadCommand);
+    
+    // Generate the S3 URL
+    const imageUrl = `https://${BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${fileName}`;
+    
+    // Save to database with direct upload flag
+    const upload = await prisma.customUpload.create({
+      data: {
+        productId: parseInt(productId),
+        userId,
+        imageUrl,
+        position: { x: 0, y: 0 }, // Default position since we're placing images programmatically in SVG
+        scale: 1.0,
+        rotation: 0.0,
+        maskId: 1
+      }
+    });
+    
+    res.status(201).json({
+      uploadId: upload.id,
+      imageUrl
+    });
+    
+  } catch (error) {
+    console.error('Error uploading custom image direct:', error);
+    res.status(500).json({ message: 'Failed to upload custom image' });
+  }
+});
+
 app.get('/products/:name', async (req, res) => {
     try {
         const name = decodeURIComponent(req.params.name);
@@ -302,227 +459,272 @@ app.get('/products/:name', async (req, res) => {
     }
 });
 
+// The existing route needs to be updated to include masks
 app.get('/products/:id/customized-preview', async (req, res) => {
   try {
-      const productId = parseInt(req.params.id);
-      
-      const product = await prisma.product.findUnique({
-          where: { id: productId },
-          include: { customizationTemplate: true }
-      });
-
-      if (!product) {
-          return res.status(404).json({ message: "Product not found" });
+    const productId = parseInt(req.params.id);
+    
+    const product = await prisma.product.findUnique({
+      where: { id: productId },
+      include: {
+        customizationTemplate: true,
+        productMasks: {
+          include: {
+            mask: true
+          },
+          orderBy: {
+            id: 'asc'
+          }
+        }
       }
-      const svgTemplates = [
-        // Mug
-        `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 600 600">
-  <!-- Background -->
-  <rect width="600" height="600" fill="#f8f9fa" />
-  
-  <!-- Mug Base -->
-  <path d="M200,200 C200,180 220,160 240,160 L360,160 C380,160 400,180 400,200 L400,400 C400,420 380,440 360,440 L240,440 C220,440 200,420 200,400 Z" fill="#ffffff" stroke="#333333" stroke-width="5"/>
-  
-  <!-- Mug Handle -->
-  <path d="M400,220 C450,220 470,260 470,300 C470,340 450,380 400,380" fill="transparent" stroke="#333333" stroke-width="5" stroke-linecap="round"/>
-  
-  <!-- Mug Top Edge -->
-  <ellipse cx="300" cy="160" rx="60" ry="20" fill="#ffffff" stroke="#333333" stroke-width="5"/>
-  
-  <!-- Mug Bottom Shadow -->
-  <ellipse cx="300" cy="440" rx="60" ry="10" fill="#dddddd" stroke="none"/>
-  
-  <!-- Customization Area -->
-  <g id="customization-area">
-    <!-- Default placeholder text (will be hidden when image is uploaded) -->
-    <text x="300" y="300" text-anchor="middle" dominant-baseline="middle" font-family="Arial" font-size="24" fill="#888888">
-      Your Design Here
-    </text>
+    });
     
-    <!-- Placeholder for user image -->
-    <image id="custom-image-placeholder" x="240" y="220" width="120" height="120" xlink:href="" preserveAspectRatio="xMidYMid meet"/>
+    if (!product) {
+      return res.status(404).json({ message: "Product not found" });
+    }
     
-    <!-- Customization area outline (optional, for visual guidance) -->
-    <rect x="240" y="220" width="120" height="120" fill="none" stroke="#cccccc" stroke-width="1" stroke-dasharray="5,5"/>
-  </g>
-  
-  <!-- Mug highlights -->
-  <path d="M210,210 C220,190 235,180 250,180 L255,180" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" opacity="0.7"/>
-  <path d="M240,420 C235,420 225,415 220,410 L215,400" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" opacity="0.5"/>
-  
-  <!-- Product title -->
-  <text x="300" y="100" text-anchor="middle" font-family="Arial" font-size="24" font-weight="bold" fill="#333333">
-    Customizable Mug
-  </text>
-  
-  <!-- Instructions -->
-  <text x="300" y="520" text-anchor="middle" font-family="Arial" font-size="14" fill="#666666">
-    Preview 1: Front view of mug
-  </text>
-</svg>`,
-
-        // Template 2: Mug with angled view
-        `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 600 600">
-  <!-- Background -->
-  <rect width="600" height="600" fill="#f8f9fa" />
-  
-  <!-- Mug from different angle (perspective view) -->
-  <g transform="translate(300, 300) rotate(-15) translate(-300, -300)">
-    <!-- Mug Base -->
-    <ellipse cx="300" cy="440" rx="80" ry="20" fill="#dddddd" stroke="none"/>
-    <path d="M220,200 C220,180 240,160 270,160 L330,160 C360,160 380,180 380,200 L380,400 C380,420 360,440 330,440 L270,440 C240,440 220,420 220,400 Z" fill="#ffffff" stroke="#333333" stroke-width="5"/>
+    // Format the data for the frontend
+    const masks = product.productMasks.map(pm => pm.mask);
     
-    <!-- Mug Top Edge (perspective ellipse) -->
-    <ellipse cx="300" cy="160" rx="55" ry="20" fill="#ffffff" stroke="#333333" stroke-width="5"/>
+    // Get the SVG template (either custom or default)
+    let svgData = null;
+    if (product.customizationTemplate) {
+      svgData = product.customizationTemplate.svgData;
+    }
     
-    <!-- Mug Handle (adjusted for perspective) -->
-    <path d="M380,220 C430,230 440,260 440,300 C440,340 430,370 380,380" fill="transparent" stroke="#333333" stroke-width="5" stroke-linecap="round"/>
-    
-    <!-- Customization Area (adjusted for perspective) -->
-    <g id="customization-area">
-      <!-- Default placeholder text -->
-      <text x="300" y="300" text-anchor="middle" dominant-baseline="middle" font-family="Arial" font-size="24" fill="#888888" transform="rotate(15, 300, 300)">
-        Your Design Here
-      </text>
-      
-      <!-- Placeholder for user image -->
-      <image id="custom-image-placeholder" x="240" y="220" width="120" height="120" xlink:href="" preserveAspectRatio="xMidYMid meet"/>
-      
-      <!-- Customization area outline -->
-      <rect x="240" y="220" width="120" height="120" fill="none" stroke="#cccccc" stroke-width="1" stroke-dasharray="5,5"/>
-    </g>
-  </g>
-  
-  <!-- Product title -->
-  <text x="300" y="100" text-anchor="middle" font-family="Arial" font-size="24" font-weight="bold" fill="#333333">
-    Customizable Mug
-  </text>
-  
-  <!-- Instructions -->
-  <text x="300" y="520" text-anchor="middle" font-family="Arial" font-size="14" fill="#666666">
-    Preview 2: Angled view of mug
-  </text>
-</svg>`,
-
-        // Template 3: Circle input template
-        `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 600 600">
-  <!-- Background -->
-  <rect width="600" height="600" fill="#f8f9fa" />
-  
-  <!-- Mug Base -->
-  <path d="M200,200 C200,180 220,160 240,160 L360,160 C380,160 400,180 400,200 L400,400 C400,420 380,440 360,440 L240,440 C220,440 200,420 200,400 Z" fill="#ffffff" stroke="#333333" stroke-width="5"/>
-  
-  <!-- Mug Handle -->
-  <path d="M400,220 C450,220 470,260 470,300 C470,340 450,380 400,380" fill="transparent" stroke="#333333" stroke-width="5" stroke-linecap="round"/>
-  
-  <!-- Mug Top Edge -->
-  <ellipse cx="300" cy="160" rx="60" ry="20" fill="#ffffff" stroke="#333333" stroke-width="5"/>
-  
-  <!-- Mug Bottom Shadow -->
-  <ellipse cx="300" cy="440" rx="60" ry="10" fill="#dddddd" stroke="none"/>
-  
-  <!-- Circular Customization Area -->
-  <g id="customization-area">
-    <!-- Circle clip path -->
-    <defs>
-      <clipPath id="circle-clip">
-        <circle cx="300" cy="280" r="70" />
-      </clipPath>
-    </defs>
-    
-    <!-- Circle outline for guidance -->
-    <circle cx="300" cy="280" r="70" fill="none" stroke="#cccccc" stroke-width="2" stroke-dasharray="5,5"/>
-    
-    <!-- Default placeholder text -->
-    <text x="300" y="280" text-anchor="middle" dominant-baseline="middle" font-family="Arial" font-size="18" fill="#888888">
-      Add Your
-    </text>
-    <text x="300" y="305" text-anchor="middle" dominant-baseline="middle" font-family="Arial" font-size="18" fill="#888888">
-      Circular Design
-    </text>
-    
-    <!-- Placeholder for user image (clipped to circle) -->
-    <image id="custom-image-placeholder" x="230" y="210" width="140" height="140" xlink:href="" preserveAspectRatio="xMidYMid meet" clip-path="url(#circle-clip)"/>
-  </g>
-  
-  <!-- Product title -->
-  <text x="300" y="100" text-anchor="middle" font-family="Arial" font-size="24" font-weight="bold" fill="#333333">
-    Circle Template Mug
-  </text>
-  
-  <!-- Instructions -->
-  <text x="300" y="520" text-anchor="middle" font-family="Arial" font-size="14" fill="#666666">
-    Preview 3: Upload a circular image or logo
-  </text>
-</svg>`,
-
-        // Template 4: Heart shape template
-        `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 600 600">
-  <!-- Background -->
-  <rect width="600" height="600" fill="#f8f9fa" />
-  
-  <!-- Mug Base -->
-  <path d="M200,200 C200,180 220,160 240,160 L360,160 C380,160 400,180 400,200 L400,400 C400,420 380,440 360,440 L240,440 C220,440 200,420 200,400 Z" fill="#ffffff" stroke="#333333" stroke-width="5"/>
-  
-  <!-- Mug Handle -->
-  <path d="M400,220 C450,220 470,260 470,300 C470,340 450,380 400,380" fill="transparent" stroke="#333333" stroke-width="5" stroke-linecap="round"/>
-  
-  <!-- Mug Top Edge -->
-  <ellipse cx="300" cy="160" rx="60" ry="20" fill="#ffffff" stroke="#333333" stroke-width="5"/>
-  
-  <!-- Mug Bottom Shadow -->
-  <ellipse cx="300" cy="440" rx="60" ry="10" fill="#dddddd" stroke="none"/>
-  
-  <!-- Heart-shaped Customization Area -->
-  <g id="customization-area">
-    <!-- Heart clip path -->
-    <defs>
-      <clipPath id="heart-clip">
-        <path d="M300,350 C260,310 220,270 220,230 C220,200 240,180 270,180 C285,180 295,190 300,200 C305,190 315,180 330,180 C360,180 380,200 380,230 C380,270 340,310 300,350 Z" />
-      </clipPath>
-    </defs>
-    
-    <!-- Heart outline for guidance -->
-    <path d="M300,350 C260,310 220,270 220,230 C220,200 240,180 270,180 C285,180 295,190 300,200 C305,190 315,180 330,180 C360,180 380,200 380,230 C380,270 340,310 300,350 Z" fill="none" stroke="#cccccc" stroke-width="2" stroke-dasharray="5,5"/>
-    
-    <!-- Default placeholder text -->
-    <text x="300" y="260" text-anchor="middle" dominant-baseline="middle" font-family="Arial" font-size="18" fill="#888888">
-      Add Your
-    </text>
-    <text x="300" y="285" text-anchor="middle" dominant-baseline="middle" font-family="Arial" font-size="18" fill="#888888">
-      Heart Design
-    </text>
-    
-    <!-- Placeholder for user image (clipped to heart shape) -->
-    <image id="custom-image-placeholder" x="220" y="180" width="160" height="170" xlink:href="" preserveAspectRatio="xMidYMid meet" clip-path="url(#heart-clip)"/>
-  </g>
-  
-  <!-- Product title -->
-  <text x="300" y="100" text-anchor="middle" font-family="Arial" font-size="24" font-weight="bold" fill="#333333">
-    Heart Template Mug
-  </text>
-  
-  <!-- Instructions -->
-  <text x="300" y="520" text-anchor="middle" font-family="Arial" font-size="14" fill="#666666">
-    Preview 4: Upload an image for heart-shaped customization
-  </text>
-</svg>`
-      ];
-
-      // If customizationTemplate exists, use it as the first template and include the default ones
-      if (product.customizationTemplate) {
-        // Put the database template first in the array
-        svgTemplates.unshift(product.customizationTemplate.svgData);
-      }
-
-      return res.status(200).json({ 
-          svgTemplates: svgTemplates
-      });
+    return res.status(200).json({
+      id: product.id,
+      name: product.name,
+      svgData: svgData,
+      masks: masks
+    });
   } catch (error) {
-      console.error("Error fetching customized preview:", error);
-      res.status(500).json({ message: "Internal server error" });
+    console.error("Error fetching customized preview:", error);
+    res.status(500).json({ message: "Internal server error" });
   }
 });
+
+// app.get('/products/:id/customized-preview', async (req, res) => {
+//   try {
+//       const productId = parseInt(req.params.id);
+      
+//       const product = await prisma.product.findUnique({
+//           where: { id: productId },
+//           include: { customizationTemplate: true }
+//       });
+
+//       if (!product) {
+//           return res.status(404).json({ message: "Product not found" });
+//       }
+//       const svgTemplates = [
+//         // Mug
+//         `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 600 600">
+//   <!-- Background -->
+//   <rect width="600" height="600" fill="#f8f9fa" />
+  
+//   <!-- Mug Base -->
+//   <path d="M200,200 C200,180 220,160 240,160 L360,160 C380,160 400,180 400,200 L400,400 C400,420 380,440 360,440 L240,440 C220,440 200,420 200,400 Z" fill="#ffffff" stroke="#333333" stroke-width="5"/>
+  
+//   <!-- Mug Handle -->
+//   <path d="M400,220 C450,220 470,260 470,300 C470,340 450,380 400,380" fill="transparent" stroke="#333333" stroke-width="5" stroke-linecap="round"/>
+  
+//   <!-- Mug Top Edge -->
+//   <ellipse cx="300" cy="160" rx="60" ry="20" fill="#ffffff" stroke="#333333" stroke-width="5"/>
+  
+//   <!-- Mug Bottom Shadow -->
+//   <ellipse cx="300" cy="440" rx="60" ry="10" fill="#dddddd" stroke="none"/>
+  
+//   <!-- Customization Area -->
+//   <g id="customization-area">
+//     <!-- Default placeholder text (will be hidden when image is uploaded) -->
+//     <text x="300" y="300" text-anchor="middle" dominant-baseline="middle" font-family="Arial" font-size="24" fill="#888888">
+//       Your Design Here
+//     </text>
+    
+//     <!-- Placeholder for user image -->
+//     <image id="custom-image-placeholder" x="240" y="220" width="120" height="120" xlink:href="" preserveAspectRatio="xMidYMid meet"/>
+    
+//     <!-- Customization area outline (optional, for visual guidance) -->
+//     <rect x="240" y="220" width="120" height="120" fill="none" stroke="#cccccc" stroke-width="1" stroke-dasharray="5,5"/>
+//   </g>
+  
+//   <!-- Mug highlights -->
+//   <path d="M210,210 C220,190 235,180 250,180 L255,180" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" opacity="0.7"/>
+//   <path d="M240,420 C235,420 225,415 220,410 L215,400" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" opacity="0.5"/>
+  
+//   <!-- Product title -->
+//   <text x="300" y="100" text-anchor="middle" font-family="Arial" font-size="24" font-weight="bold" fill="#333333">
+//     Customizable Mug
+//   </text>
+  
+//   <!-- Instructions -->
+//   <text x="300" y="520" text-anchor="middle" font-family="Arial" font-size="14" fill="#666666">
+//     Preview 1: Front view of mug
+//   </text>
+// </svg>`,
+
+//         // Template 2: Mug with angled view
+//         `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 600 600">
+//   <!-- Background -->
+//   <rect width="600" height="600" fill="#f8f9fa" />
+  
+//   <!-- Mug from different angle (perspective view) -->
+//   <g transform="translate(300, 300) rotate(-15) translate(-300, -300)">
+//     <!-- Mug Base -->
+//     <ellipse cx="300" cy="440" rx="80" ry="20" fill="#dddddd" stroke="none"/>
+//     <path d="M220,200 C220,180 240,160 270,160 L330,160 C360,160 380,180 380,200 L380,400 C380,420 360,440 330,440 L270,440 C240,440 220,420 220,400 Z" fill="#ffffff" stroke="#333333" stroke-width="5"/>
+    
+//     <!-- Mug Top Edge (perspective ellipse) -->
+//     <ellipse cx="300" cy="160" rx="55" ry="20" fill="#ffffff" stroke="#333333" stroke-width="5"/>
+    
+//     <!-- Mug Handle (adjusted for perspective) -->
+//     <path d="M380,220 C430,230 440,260 440,300 C440,340 430,370 380,380" fill="transparent" stroke="#333333" stroke-width="5" stroke-linecap="round"/>
+    
+//     <!-- Customization Area (adjusted for perspective) -->
+//     <g id="customization-area">
+//       <!-- Default placeholder text -->
+//       <text x="300" y="300" text-anchor="middle" dominant-baseline="middle" font-family="Arial" font-size="24" fill="#888888" transform="rotate(15, 300, 300)">
+//         Your Design Here
+//       </text>
+      
+//       <!-- Placeholder for user image -->
+//       <image id="custom-image-placeholder" x="240" y="220" width="120" height="120" xlink:href="" preserveAspectRatio="xMidYMid meet"/>
+      
+//       <!-- Customization area outline -->
+//       <rect x="240" y="220" width="120" height="120" fill="none" stroke="#cccccc" stroke-width="1" stroke-dasharray="5,5"/>
+//     </g>
+//   </g>
+  
+//   <!-- Product title -->
+//   <text x="300" y="100" text-anchor="middle" font-family="Arial" font-size="24" font-weight="bold" fill="#333333">
+//     Customizable Mug
+//   </text>
+  
+//   <!-- Instructions -->
+//   <text x="300" y="520" text-anchor="middle" font-family="Arial" font-size="14" fill="#666666">
+//     Preview 2: Angled view of mug
+//   </text>
+// </svg>`,
+
+//         // Template 3: Circle input template
+//         `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 600 600">
+//   <!-- Background -->
+//   <rect width="600" height="600" fill="#f8f9fa" />
+  
+//   <!-- Mug Base -->
+//   <path d="M200,200 C200,180 220,160 240,160 L360,160 C380,160 400,180 400,200 L400,400 C400,420 380,440 360,440 L240,440 C220,440 200,420 200,400 Z" fill="#ffffff" stroke="#333333" stroke-width="5"/>
+  
+//   <!-- Mug Handle -->
+//   <path d="M400,220 C450,220 470,260 470,300 C470,340 450,380 400,380" fill="transparent" stroke="#333333" stroke-width="5" stroke-linecap="round"/>
+  
+//   <!-- Mug Top Edge -->
+//   <ellipse cx="300" cy="160" rx="60" ry="20" fill="#ffffff" stroke="#333333" stroke-width="5"/>
+  
+//   <!-- Mug Bottom Shadow -->
+//   <ellipse cx="300" cy="440" rx="60" ry="10" fill="#dddddd" stroke="none"/>
+  
+//   <!-- Circular Customization Area -->
+//   <g id="customization-area">
+//     <!-- Circle clip path -->
+//     <defs>
+//       <clipPath id="circle-clip">
+//         <circle cx="300" cy="280" r="70" />
+//       </clipPath>
+//     </defs>
+    
+//     <!-- Circle outline for guidance -->
+//     <circle cx="300" cy="280" r="70" fill="none" stroke="#cccccc" stroke-width="2" stroke-dasharray="5,5"/>
+    
+//     <!-- Default placeholder text -->
+//     <text x="300" y="280" text-anchor="middle" dominant-baseline="middle" font-family="Arial" font-size="18" fill="#888888">
+//       Add Your
+//     </text>
+//     <text x="300" y="305" text-anchor="middle" dominant-baseline="middle" font-family="Arial" font-size="18" fill="#888888">
+//       Circular Design
+//     </text>
+    
+//     <!-- Placeholder for user image (clipped to circle) -->
+//     <image id="custom-image-placeholder" x="230" y="210" width="140" height="140" xlink:href="" preserveAspectRatio="xMidYMid meet" clip-path="url(#circle-clip)"/>
+//   </g>
+  
+//   <!-- Product title -->
+//   <text x="300" y="100" text-anchor="middle" font-family="Arial" font-size="24" font-weight="bold" fill="#333333">
+//     Circle Template Mug
+//   </text>
+  
+//   <!-- Instructions -->
+//   <text x="300" y="520" text-anchor="middle" font-family="Arial" font-size="14" fill="#666666">
+//     Preview 3: Upload a circular image or logo
+//   </text>
+// </svg>`,
+
+//         // Template 4: Heart shape template
+//         `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 600 600">
+//   <!-- Background -->
+//   <rect width="600" height="600" fill="#f8f9fa" />
+  
+//   <!-- Mug Base -->
+//   <path d="M200,200 C200,180 220,160 240,160 L360,160 C380,160 400,180 400,200 L400,400 C400,420 380,440 360,440 L240,440 C220,440 200,420 200,400 Z" fill="#ffffff" stroke="#333333" stroke-width="5"/>
+  
+//   <!-- Mug Handle -->
+//   <path d="M400,220 C450,220 470,260 470,300 C470,340 450,380 400,380" fill="transparent" stroke="#333333" stroke-width="5" stroke-linecap="round"/>
+  
+//   <!-- Mug Top Edge -->
+//   <ellipse cx="300" cy="160" rx="60" ry="20" fill="#ffffff" stroke="#333333" stroke-width="5"/>
+  
+//   <!-- Mug Bottom Shadow -->
+//   <ellipse cx="300" cy="440" rx="60" ry="10" fill="#dddddd" stroke="none"/>
+  
+//   <!-- Heart-shaped Customization Area -->
+//   <g id="customization-area">
+//     <!-- Heart clip path -->
+//     <defs>
+//       <clipPath id="heart-clip">
+//         <path d="M300,350 C260,310 220,270 220,230 C220,200 240,180 270,180 C285,180 295,190 300,200 C305,190 315,180 330,180 C360,180 380,200 380,230 C380,270 340,310 300,350 Z" />
+//       </clipPath>
+//     </defs>
+    
+//     <!-- Heart outline for guidance -->
+//     <path d="M300,350 C260,310 220,270 220,230 C220,200 240,180 270,180 C285,180 295,190 300,200 C305,190 315,180 330,180 C360,180 380,200 380,230 C380,270 340,310 300,350 Z" fill="none" stroke="#cccccc" stroke-width="2" stroke-dasharray="5,5"/>
+    
+//     <!-- Default placeholder text -->
+//     <text x="300" y="260" text-anchor="middle" dominant-baseline="middle" font-family="Arial" font-size="18" fill="#888888">
+//       Add Your
+//     </text>
+//     <text x="300" y="285" text-anchor="middle" dominant-baseline="middle" font-family="Arial" font-size="18" fill="#888888">
+//       Heart Design
+//     </text>
+    
+//     <!-- Placeholder for user image (clipped to heart shape) -->
+//     <image id="custom-image-placeholder" x="220" y="180" width="160" height="170" xlink:href="" preserveAspectRatio="xMidYMid meet" clip-path="url(#heart-clip)"/>
+//   </g>
+  
+//   <!-- Product title -->
+//   <text x="300" y="100" text-anchor="middle" font-family="Arial" font-size="24" font-weight="bold" fill="#333333">
+//     Heart Template Mug
+//   </text>
+  
+//   <!-- Instructions -->
+//   <text x="300" y="520" text-anchor="middle" font-family="Arial" font-size="14" fill="#666666">
+//     Preview 4: Upload an image for heart-shaped customization
+//   </text>
+// </svg>`
+//       ];
+
+//       // If customizationTemplate exists, use it as the first template and include the default ones
+//       if (product.customizationTemplate) {
+//         // Put the database template first in the array
+//         svgTemplates.unshift(product.customizationTemplate.svgData);
+//       }
+
+//       return res.status(200).json({ 
+//           svgTemplates: svgTemplates
+//       });
+//   } catch (error) {
+//       console.error("Error fetching customized preview:", error);
+//       res.status(500).json({ message: "Internal server error" });
+//   }
+// });
 
 // CATEGORIES ROUTES
 app.get('/categories', async (req, res) => {
@@ -863,97 +1065,112 @@ app.post('/cart/add', authenticateUser, async (req, res) => {
 
   app.get('/cart', authenticateUser, async (req, res) => {
     try {
-        const userId = req.user.id;
-        
-        // Fetch cart with items and product details
-        const cart = await prisma.cart.findFirst({
-          where: { userId },
-          include: {
-            items: {
-              include: {
-                product: {
-                  include: {
-                    images: true
+      const userId = req.user.id;
+      
+      // Fetch cart with items and product details
+      const cart = await prisma.cart.findFirst({
+        where: { userId },
+        include: {
+          items: {
+            include: {
+              product: {
+                include: {
+                  images: true,
+                  productMasks: {
+                    include: {
+                      mask: true
+                    }
                   }
                 }
               }
-            },
-            appliedCoupon: true
-          }
-        });
-        
-        if (!cart) {
-          // Create an empty cart if none exists
-          return res.json({
-            items: [],
-            summary: {
-              subtotal: 0,
-              discount: 0,
-              total: 0,
-              deliveryFee: 200, // Default delivery fee
-              tax: 0
             }
-          });
+          },
+          appliedCoupon: true
         }
-        
-        // Transform cart items for response
-        const items = cart.items.map(item => ({
-          id: item.id,
-          quantity: item.quantity,
-          product: {
-            id: item.product.id,
-            name: item.product.name,
-            price: parseFloat(item.product.price),
-            discountedPrice: item.product.discountedPrice ? parseFloat(item.product.discountedPrice) : null,
-            images: item.product.images || [],
-            color: item.product.color,
-            size: item.product.size
-          }
-        }));
-        
-        // Calculate cart summary
-        let subtotal = 0;
-        items.forEach(item => {
-          const price = item.product.discountedPrice || item.product.price;
-          subtotal += price * item.quantity;
-        });
-        
-        // Get discount amount (from applied coupon)
-        const discountAmount = parseFloat(cart.discountAmount || 0);
-        
-        // Calculate tax (assuming 5% tax rate)
-        const taxRate = 0.05;
-        const taxAmount = (subtotal - discountAmount) * taxRate;
-        
-        // Calculate total
-        const total = subtotal - discountAmount;
-        
-        // Build response
-        const response = {
-          items,
+      });
+      
+      if (!cart) {
+        return res.json({
+          items: [],
           summary: {
-            subtotal,
-            discount: discountAmount,
-            total,
-            deliveryFee: 200, // Default delivery fee
-            tax: taxAmount
+            subtotal: 0,
+            discount: 0,
+            total: 0,
+            deliveryFee: 0,
+            tax: 0
           }
-        };
-        
-        if (cart.coupon) {
-          response.appliedCoupon = {
-            code: cart.coupon.code,
-            discountType: cart.coupon.discountType,
-            discountValue: parseFloat(cart.coupon.discountValue)
-          };
-        }
-        
-        res.json(response);
-        
-      } catch (error) {
-        console.error('Error fetching cart:', error);
-        res.status(500).json({ message: 'Failed to fetch cart' });
+        });
       }
+      
+      const items = cart.items.map(item => ({
+        id: item.id,
+        quantity: item.quantity,
+        product: {
+          id: item.product.id,
+          name: item.product.name,
+          price: parseFloat(item.product.price),
+          discountedPrice: item.product.discountedPrice ? parseFloat(item.product.discountedPrice) : null,
+          images: item.product.images || [],
+          color: item.product.color,
+          size: item.product.size,
+          deliveryFee: item.product.deliveryFee ? parseFloat(item.product.deliveryFee) : 0,
+          masks: item.product.productMasks.map(pm => ({
+            id: pm.mask.id,
+            name: pm.mask.name,
+            svgPath: pm.mask.svgPath
+          }))
+        },
+        customizationDetails: item.customizationDetails,
+        customizationImageUrls: item.customizationImageUrls || [] // Changed to return array
+      }));
+      
+      // Calculate cart summary
+      let subtotal = 0;
+      let deliveryFee = 0;
+      
+      items.forEach(item => {
+        const price = item.product.discountedPrice || item.product.price;
+        subtotal += price * item.quantity;
+        deliveryFee += (item.product.deliveryFee || 0) * item.quantity;
+      });
+      
+      // Get discount amount (from applied coupon)
+      const discountAmount = parseFloat(cart.discountAmount || 0);
+      
+      // Calculate tax (assuming 5% tax rate)
+      const taxRate = 0.05;
+      const taxAmount = (subtotal - discountAmount) * taxRate;
+      
+      // Calculate total
+      const total = subtotal - discountAmount + deliveryFee + taxAmount;
+      
+      // Build response
+      const response = {
+        items,
+        summary: {
+          subtotal,
+          discount: discountAmount,
+          total,
+          deliveryFee,
+          tax: taxAmount
+        }
+      };
+      
+      if (cart.appliedCoupon) {
+        response.appliedCoupon = {
+          code: cart.appliedCoupon.code,
+          discountType: cart.appliedCoupon.discountType,
+          discountValue: parseFloat(cart.appliedCoupon.discountValue),
+          description: cart.appliedCoupon.description
+        };
+      }
+      
+      res.json(response);
+      
+    } catch (error) {
+      console.error('Error fetching cart:', error);
+      res.status(500).json({ message: 'Failed to fetch cart' });
+    }
   });
 
 app.put('/cart/item/:itemId', authenticateUser, async (req, res) => {
@@ -1661,122 +1878,201 @@ app.post('/user/addresses', authenticateUser, async(req,res) => {
 })
 
 app.post('/create-order', authenticateUser, async (req, res) => {
-    try {
-      const { 
-        amount, 
-        currency = 'INR', 
-        receipt, 
-        useWallet, 
-        walletAmount = 0,
-        addressId,
-        shippingAddress,
-        notes
-      } = req.body;
-  
-      if (!amount || !receipt) {
-        return res.status(400).json({ message: "Amount and receipt are required" });
+  try {
+    const { 
+      amount, 
+      currency = 'INR', 
+      receipt, 
+      useWallet, 
+      walletAmount = 0,
+      addressId,
+      shippingAddress,
+      notes,
+      cartItems  // Added to capture customization details
+    } = req.body;
+
+    if (!amount || !receipt) {
+      return res.status(400).json({ message: "Amount and receipt are required" });
+    }
+
+    let address;
+    
+    if (addressId) {
+      address = await prisma.address.findUnique({
+        where: { 
+          id: parseInt(addressId),
+          userId: req.user.id
+        }
+      });
+
+      if (!address) {
+        return res.status(400).json({ message: "Invalid address selected" });
       }
-  
-      let address;
-      
-      if (addressId) {
-        address = await prisma.address.findUnique({
-          where: { 
-            id: parseInt(addressId),
-            userId: req.user.id
+    } else if (shippingAddress) {
+      address = shippingAddress;
+    } else {
+      return res.status(400).json({ message: "Address information is required" });
+    }
+
+    if (useWallet) {
+      const wallet = await prisma.wallet.findUnique({
+        where: { userId: req.user.id }
+      });
+
+      if (!wallet || wallet.balance < walletAmount) {
+        return res.status(400).json({ 
+          message: "Insufficient wallet balance"
+        });
+      }
+    }
+
+    const razorpayNotes = {
+      shipping_address: JSON.stringify({
+        name: address.name,
+        line1: address.line1,
+        line2: address.line2 || '',
+        city: address.city,
+        state: address.state,
+        postal_code: address.postalCode || address.postal_code || address.zip,
+        country: address.country,
+        phone: address.phone
+      })
+    };
+    
+    // Add customization details to Razorpay notes if available
+    if (cartItems && cartItems.length > 0) {
+      // Ensure we handle the customizationImageUrls as arrays
+      const processedCartItems = cartItems.map(item => {
+        const processed = {...item};
+        
+        // Ensure customizationImageUrls is always an array
+        if (!processed.customizationImageUrls) {
+          processed.customizationImageUrls = [];
+          
+          // For backward compatibility - convert single URL to array if provided
+          if (processed.customizationImageUrl) {
+            processed.customizationImageUrls.push(processed.customizationImageUrl);
           }
-        });
-  
-        if (!address) {
-          return res.status(400).json({ message: "Invalid address selected" });
         }
-      } else if (shippingAddress) {
-        address = shippingAddress;
-      } else {
-        return res.status(400).json({ message: "Address information is required" });
-      }
-  
-      if (useWallet) {
-        const wallet = await prisma.wallet.findUnique({
-          where: { userId: req.user.id }
-        });
-  
-        if (!wallet || wallet.balance < walletAmount) {
-          return res.status(400).json({ 
-            message: "Insufficient wallet balance"
-          });
-        }
-      }
-  
-      const razorpayNotes = {
-        shipping_address: JSON.stringify({
-          name: address.name,
-          line1: address.line1,
-          line2: address.line2 || '',
-          city: address.city,
-          state: address.state,
-          postal_code: address.postalCode || address.postal_code || address.zip,
-          country: address.country,
-          phone: address.phone
-        })
-      };
-      
-      if (notes && typeof notes === 'object' && notes.custom_notes) {
-        razorpayNotes.custom_notes = notes.custom_notes;
-      } else if (typeof notes === 'string') {
-        razorpayNotes.custom_notes = notes;
-      }
-  
-      const options = {
-          amount: amount * 100,
-          currency: currency,
-          receipt: receipt,
-          payment_capture: 1,
-          notes: razorpayNotes
-      };
-  
-      const razorpayOrder = await razorpay.orders.create(options);
-  
-      const notesForPrisma = typeof notes === 'object' ? 
-        JSON.stringify(notes) : 
-        (notes || null);
-  
-      const order = await prisma.order.create({
-        data: {
-          userId: req.user.id,
-          razorpayOrderId: razorpayOrder.id,
-          amount: amount,
-          status: 'INITIATED',
-          currency: currency,
-          useWallet: useWallet || false,
-          walletAmount: walletAmount || 0,
-          notes: notesForPrisma,
-          shippingAddress: {
-            create: {
-              name: address.name,
-              line1: address.line1,
-              line2: address.line2 || '',
-              city: address.city,
-              state: address.state,
-              postalCode: address.postalCode || address.postal_code || address.zip,
-              country: address.country,
-              phone: address.phone
+        
+        // Extract image URLs from customizationDetails if available
+        if (processed.customizationDetails) {
+          let details = processed.customizationDetails;
+          
+          // Parse if it's a string
+          if (typeof details === 'string') {
+            try {
+              details = JSON.parse(details);
+            } catch (e) {
+              console.error("Error parsing customization details:", e);
+            }
+          }
+          
+          // Extract image URLs from various potential structures
+          if (typeof details === 'object') {
+            // Check for direct imageUrl property
+            if (details.imageUrl) {
+              processed.customizationImageUrls.push(details.imageUrl);
+            }
+            
+            // Check for uploadedImage property
+            if (details.uploadedImage) {
+              processed.customizationImageUrls.push(details.uploadedImage);
+            }
+            
+            // Check for uploads array
+            if (details.uploads && Array.isArray(details.uploads)) {
+              details.uploads.forEach(upload => {
+                if (upload.imageUrl) {
+                  processed.customizationImageUrls.push(upload.imageUrl);
+                }
+              });
+            }
+            
+            // Check for masks array
+            if (details.masks && Array.isArray(details.masks)) {
+              details.masks.forEach(mask => {
+                if (mask.imageUrl) {
+                  processed.customizationImageUrls.push(mask.imageUrl);
+                }
+                if (mask.upload && mask.upload.imageUrl) {
+                  processed.customizationImageUrls.push(mask.upload.imageUrl);
+                }
+              });
             }
           }
         }
+        
+        // Remove duplicates from customizationImageUrls
+        processed.customizationImageUrls = [...new Set(processed.customizationImageUrls)];
+        
+        return processed;
       });
-  
-      res.status(200).json({
-        id: razorpayOrder.id,
-        amount: razorpayOrder.amount,
-        currency: razorpayOrder.currency,
-        orderId: order.id
-      });
-    } catch (error) {
-      console.error("Error creating Razorpay order:", error);
-      res.status(500).json({ message: "Failed to create order" });
+      
+      razorpayNotes.customization_details = JSON.stringify(processedCartItems);
     }
-  });
+    
+    if (notes && typeof notes === 'object' && notes.custom_notes) {
+      razorpayNotes.custom_notes = notes.custom_notes;
+    } else if (typeof notes === 'string') {
+      razorpayNotes.custom_notes = notes;
+    }
+
+    const options = {
+        amount: amount * 100,
+        currency: currency,
+        receipt: receipt,
+        payment_capture: 1,
+        notes: razorpayNotes
+    };
+
+    const razorpayOrder = await razorpay.orders.create(options);
+
+    // Process customization details for storing in the database
+    const customizationMetadata = cartItems && cartItems.length > 0 ? 
+      JSON.stringify(razorpayNotes.customization_details) : null;
+
+    const notesForPrisma = typeof notes === 'object' ? 
+      JSON.stringify(notes) : 
+      (notes || null);
+
+    const order = await prisma.order.create({
+      data: {
+        userId: req.user.id,
+        razorpayOrderId: razorpayOrder.id,
+        amount: amount,
+        status: 'INITIATED',
+        currency: currency,
+        useWallet: useWallet || false,
+        walletAmount: walletAmount || 0,
+        notes: notesForPrisma,
+        customizationDetails: customizationMetadata, // Store customization details
+        shippingAddress: {
+          create: {
+            name: address.name,
+            line1: address.line1,
+            line2: address.line2 || '',
+            city: address.city,
+            state: address.state,
+            postalCode: address.postalCode || address.postal_code || address.zip,
+            country: address.country,
+            phone: address.phone
+          }
+        }
+      }
+    });
+
+    res.status(200).json({
+      id: razorpayOrder.id,
+      amount: razorpayOrder.amount,
+      currency: razorpayOrder.currency,
+      orderId: order.id
+    });
+  } catch (error) {
+    console.error("Error creating Razorpay order:", error);
+    res.status(500).json({ message: "Failed to create order" });
+  }
+});
 
 app.post('/verify-payment', authenticateUser, async (req, res) => {
   try {
@@ -1785,9 +2081,10 @@ app.post('/verify-payment', authenticateUser, async (req, res) => {
       razorpay_payment_id, 
       razorpay_signature,
       useWallet,
-      walletAmount = 0
+      walletAmount = 0,
+      customizationDetails // Added to capture customization details
     } = req.body;
-
+  
     // Validate input
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
       return res.status(400).json({ 
@@ -1795,49 +2092,49 @@ app.post('/verify-payment', authenticateUser, async (req, res) => {
         message: "Missing payment details" 
       });
     }
-
+  
     // Verify signature
     const generated_signature = crypto
       .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
       .update(razorpay_order_id + "|" + razorpay_payment_id)
       .digest('hex');
-
+  
     if (generated_signature !== razorpay_signature) {
       return res.status(400).json({ 
         status: 'error', 
         message: "Invalid payment signature" 
       });
     }
-
+  
     const order = await prisma.order.findUnique({
       where: { razorpayOrderId: razorpay_order_id },
       include: { shippingAddress: true }
     });
-
+  
     if (!order) {
       return res.status(404).json({ 
         status: 'error', 
         message: "Order not found" 
       });
     }
-
+  
     if (useWallet && walletAmount > 0) {
       const wallet = await prisma.wallet.findUnique({
         where: { userId: req.user.id }
       });
-
+  
       if (!wallet || wallet.balance < walletAmount) {
         return res.status(400).json({ 
           status: 'error', 
           message: "Insufficient wallet balance" 
         });
       }
-
+  
       await prisma.wallet.update({
         where: { userId: req.user.id },
         data: { balance: { decrement: walletAmount } }
       });
-
+  
       await prisma.transaction.create({
         data: {
           walletId: wallet.id,
@@ -1847,7 +2144,7 @@ app.post('/verify-payment', authenticateUser, async (req, res) => {
         }
       });
     }
-
+  
     await prisma.order.update({
       where: { razorpayOrderId: razorpay_order_id },
       data: {
@@ -1856,27 +2153,61 @@ app.post('/verify-payment', authenticateUser, async (req, res) => {
         razorpaySignature: razorpay_signature
       }
     });
-
+  
     const cart = await prisma.cart.findUnique({
       where: { userId: req.user.id },
       include: { items: { include: { product: true } } }
     });
-
+  
     if (cart && cart.items.length > 0) {
-      await prisma.orderItem.createMany({
-        data: cart.items.map(item => ({
-          orderId: order.id,
-          productId: item.productId,
-          quantity: item.quantity,
-          price: item.product.discountedPrice || item.product.price
-        }))
-      });
-
+      // Retrieve customization details for each cart item
+      for (const item of cart.items) {
+        // Find matching customization details from the submitted data
+        let customizationImageUrls = [];
+        let itemCustomizationDetails = null;
+        
+        if (customizationDetails && Array.isArray(customizationDetails)) {
+          const matchingCustomization = customizationDetails.find(
+            custom => custom.itemId === item.id || custom.productId === item.productId
+          );
+          
+          if (matchingCustomization) {
+            // Handle customizationImageUrls as array
+            if (matchingCustomization.customizationImageUrls && Array.isArray(matchingCustomization.customizationImageUrls)) {
+              customizationImageUrls = matchingCustomization.customizationImageUrls;
+            } 
+            // For backward compatibility - convert single URL to array if provided
+            else if (matchingCustomization.customizationImageUrl) {
+              customizationImageUrls = [matchingCustomization.customizationImageUrl];
+            }
+            
+            // Handle customization details
+            itemCustomizationDetails = matchingCustomization.customizationDetails;
+          }
+        }
+        
+        // Create order item with customization
+        await prisma.orderItem.create({
+          data: {
+            orderId: order.id,
+            productId: item.productId,
+            quantity: item.quantity,
+            price: item.product.discountedPrice || item.product.price,
+            customizationImageUrl: customizationImageUrls, // Now using the array
+            customizationDetails: itemCustomizationDetails ? 
+              (typeof itemCustomizationDetails === 'object' ? 
+                JSON.stringify(itemCustomizationDetails) : 
+                itemCustomizationDetails) : 
+              null
+          }
+        });
+      }
+  
       await prisma.cartItem.deleteMany({
         where: { cartId: cart.id }
       });
     }
-
+  
     res.status(200).json({ 
       status: 'success', 
       message: "Payment verified successfully",
@@ -1889,7 +2220,7 @@ app.post('/verify-payment', authenticateUser, async (req, res) => {
       message: "Payment verification failed" 
     });
   }
-});
+  });
 
 app.get('/orders', authenticateUser, async (req,res) => {
     try {
@@ -1925,44 +2256,69 @@ app.get('/orders', authenticateUser, async (req,res) => {
       }
 })
 
-app.get('/order/:orderId',authenticateUser, async (req,res) => {
-    try {
-        const { orderId } = req.params;
-    
-        const order = await prisma.order.findUnique({
-          where: { 
-            id: parseInt(orderId),
-            userId: req.user.id 
-          },
+app.get('/order/:orderId', authenticateUser, async (req, res) => {
+  try {
+    const { orderId } = req.params;
+
+    const order = await prisma.order.findUnique({
+      where: {
+        id: parseInt(orderId),
+        userId: req.user.id
+      },
+      include: {
+        orderItems: {
           include: {
-            orderItems: {
+            product: {
               include: {
-                product: {
-                  include: {
-                    images: true
-                  }
-                }
+                images: true
               }
             }
           }
-        });
-    
-        if (!order) {
-          return res.status(404).json({ message: "Order not found" });
         }
-    
-        const summary = {
-          total: order.orderItems.reduce((sum, item) => sum + (item.price * item.quantity), 0),
-          deliveryFee: 50,
-          tax: order.orderItems.reduce((sum, item) => sum + (item.price * item.quantity * 0.1), 0)
-        };
-    
-        res.status(200).json({ ...order, summary });
-      } catch (error) {
-        console.error("Error fetching order details:", error);
-        res.status(500).json({ message: "Failed to fetch order details", error: error.message });
       }
-})
+    });
+
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    // Parse customizationDetails from string to object in both order and items
+    const parsedOrder = {
+      ...order,
+      customizationDetails: parseJSONSafe(order.customizationDetails),
+      orderItems: order.orderItems.map(item => ({
+        ...item,
+        customizationDetails: parseJSONSafe(item.customizationDetails)
+      }))
+    };
+
+    // Summary Calculation
+    const total = parsedOrder.orderItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    const deliveryFee = parsedOrder.deliveryFee ? Number(parsedOrder.deliveryFee) : 0;
+    const tax = total * 0.1; // 10% GST
+
+    const summary = {
+      total,
+      deliveryFee,
+      tax
+    };
+
+    res.status(200).json({ ...parsedOrder, summary });
+  } catch (error) {
+    console.error("Error fetching order details:", error);
+    res.status(500).json({ message: "Failed to fetch order details", error: error.message });
+  }
+});
+
+// Helper to safely parse JSON strings
+function parseJSONSafe(input) {
+  try {
+    return typeof input === "string" ? JSON.parse(input) : input;
+  } catch {
+    return input; // fallback to original if not parsable
+  }
+}
+
 
 app.get('/orders/latest', authenticateUser, async (req, res) => {
     try {
@@ -2470,4 +2826,144 @@ app.get('/wallet/balance', authenticateUser, async (req, res) => {
 
 app.listen(3000, () => {
     console.log("Server running on port 3000");
+});
+
+// Get product customization data
+app.get('/products/:productId/customized-preview', async (req, res) => {
+  try {
+    const { productId } = req.params;
+    
+    // Get product with its customization template and masks
+    const product = await prisma.product.findUnique({
+      where: { id: parseInt(productId) },
+      include: {
+        customizationTemplate: true,
+        productMasks: {
+          include: {
+            mask: true
+          }
+        }
+      }
+    });
+
+    if (!product) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    // Format the response
+    const response = {
+      id: product.id,
+      name: product.name,
+      svgData: product.customizationTemplate?.svgData,
+      masks: product.productMasks.map(pm => ({
+        id: pm.mask.id,
+        name: pm.mask.name,
+        description: pm.mask.description,
+        svgPath: pm.mask.svgPath,
+        minWidth: pm.mask.minWidth,
+        minHeight: pm.mask.minHeight,
+        width: pm.mask.width,
+        height: pm.mask.height,
+        positionX: pm.mask.positionX,
+        positionY: pm.mask.positionY,
+        editorWidth: pm.mask.editorWidth,
+        editorHeight: pm.mask.editorHeight
+      }))
+    };
+
+    res.json(response);
+  } catch (error) {
+    console.error('Error fetching product customization data:', error);
+    res.status(500).json({ message: 'Error fetching product customization data' });
+  }
+});
+
+// Upload custom image
+app.post('/upload/custom-image', authenticateUser, async (req, res) => {
+  try {
+    const { productId, maskId, position, scale, rotation } = req.body;
+    const file = req.files?.image;
+
+    if (!file) {
+      return res.status(400).json({ message: 'No image file provided' });
+    }
+
+    // Upload to S3
+    const key = `custom-uploads/${productId}/${maskId}/${Date.now()}-${file.name}`;
+    const uploadParams = {
+      Bucket: BUCKET_NAME,
+      Key: key,
+      Body: file.data,
+      ContentType: file.mimetype
+    };
+
+    await s3Client.send(new PutObjectCommand(uploadParams));
+    const imageUrl = `https://${BUCKET_NAME}.s3.amazonaws.com/${key}`;
+
+    // Save to database
+    const customUpload = await prisma.customUpload.create({
+      data: {
+        productId: parseInt(productId),
+        maskId: parseInt(maskId),
+        userId: req.user.id,
+        imageUrl,
+        position: position,
+        scale: parseFloat(scale),
+        rotation: parseFloat(rotation)
+      }
+    });
+
+    res.json({
+      imageUrl,
+      uploadId: customUpload.id,
+      maskDetails: {
+        position: position,
+        scale: scale,
+        rotation: rotation
+      }
+    });
+  } catch (error) {
+    console.error('Error uploading custom image:', error);
+    res.status(500).json({ message: 'Error uploading custom image' });
+  }
+});
+
+// Add customized product to cart
+app.post('/cart/add-customized', authenticateUser, async (req, res) => {
+  try {
+    const { productId, items } = req.body;
+    
+    // Get user's cart or create new one
+    let cart = await prisma.cart.findUnique({
+      where: { userId: req.user.id }
+    });
+
+    if (!cart) {
+      cart = await prisma.cart.create({
+        data: { userId: req.user.id }
+      });
+    }
+
+    // Add item to cart with customization details
+    const cartItem = await prisma.cartItem.create({
+      data: {
+        cartId: cart.id,
+        productId: parseInt(productId),
+        quantity: 1,
+        customizationDetails: items.map(item => ({
+          maskId: item.customizations.maskId,
+          uploadId: item.customizations.uploadId,
+          position: item.customizations.position,
+          scale: item.customizations.scale,
+          rotation: item.customizations.rotation
+        })),
+        customizationImageUrls: items.map(item => item.customizations.imageUrl)
+      }
+    });
+
+    res.json(cartItem);
+  } catch (error) {
+    console.error('Error adding customized product to cart:', error);
+    res.status(500).json({ message: 'Error adding customized product to cart' });
+  }
 });

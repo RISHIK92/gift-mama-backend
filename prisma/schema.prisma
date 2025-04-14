@@ -32,6 +32,7 @@ model User {
   walletOrders          WalletOrder[]
   address               Address[]
   couponUsage           CouponUsage[]
+  customUploads         CustomUpload[]
 }
 
 model Admin {
@@ -68,6 +69,8 @@ model Product {
   orderItems            OrderItem[]
   images                ProductImage[]
   deliveryFee          Decimal?   @default(0)
+  productMasks ProductMask[]
+  customUploads CustomUpload[]
 }
 
 model CustomizationTemplate {
@@ -215,16 +218,18 @@ model Cart {
 }
 
 model CartItem {
-  id             Int      @id @default(autoincrement())
-  cartId         Int
-  productId      Int
-  quantity       Int      @default(1)
-  flashSalePrice Decimal?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @default(now()) @updatedAt
-  cart           Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
-  product        Product  @relation(fields: [productId], references: [id])
-
+  id                 Int      @id @default(autoincrement())
+  cartId             Int
+  productId          Int
+  quantity           Int      @default(1)
+  flashSalePrice     Decimal?
+  customizationDetails Json?  // This will store upload information
+  customizationImageUrls String[] // New field to easily access the uploaded image 
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @default(now()) @updatedAt
+  cart               Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  product            Product  @relation(fields: [productId], references: [id])
+  
   @@unique([cartId, productId])
 }
 
@@ -249,28 +254,29 @@ model WishlistItem {
 }
 
 model Order {
-  id                Int         @id @default(autoincrement())
-  userId            Int
-  razorpayOrderId   String      @unique
-  razorpayPaymentId String?
-  razorpaySignature String?
-  amount            Float
-  status            String      @default("INITIATED")
-  delivery          String      @default("Ordered")
-  currency          String
-  useWallet         Boolean     @default(false)
-  walletAmount      Float       @default(0)
-  createdAt         DateTime    @default(now())
-  user              User        @relation(fields: [userId], references: [id])
-  orderItems        OrderItem[]
-  shippingAddress   ShippingAddress?
-  notes             String?
-  appliedCouponId   Int?
-  couponDiscountAmount Decimal? @default(0)
-  deliveryFee          Decimal    @default(0)
-  couponId          Int?
-  coupon            Coupon?      @relation(fields: [couponId], references: [id])
-  couponUsage       CouponUsage[]
+  id                    Int         @id @default(autoincrement())
+  userId                Int
+  razorpayOrderId       String      @unique
+  razorpayPaymentId     String?
+  razorpaySignature     String?
+  amount                Float
+  status                String      @default("INITIATED")
+  delivery              String      @default("Ordered")
+  currency              String
+  useWallet             Boolean     @default(false)
+  walletAmount          Float       @default(0)
+  customizationDetails  String?     // Add this field to store JSON stringified customization data
+  createdAt             DateTime    @default(now())
+  user                  User        @relation(fields: [userId], references: [id])
+  orderItems            OrderItem[]
+  shippingAddress       ShippingAddress?
+  notes                 String?
+  appliedCouponId       Int?
+  couponDiscountAmount  Decimal?    @default(0)
+  deliveryFee           Decimal     @default(0)
+  couponId              Int?
+  coupon                Coupon?     @relation(fields: [couponId], references: [id])
+  couponUsage           CouponUsage[]
 }
 
 model Address {
@@ -305,13 +311,15 @@ model ShippingAddress {
 }
 
 model OrderItem {
-  id        Int     @id @default(autoincrement())
-  orderId   Int
-  productId Int
-  quantity  Int
-  price     Float
-  order     Order   @relation(fields: [orderId], references: [id])
-  product   Product @relation(fields: [productId], references: [id])
+  id                    Int     @id @default(autoincrement())
+  orderId               Int
+  productId             Int
+  quantity              Int
+  price                 Float
+  customizationImageUrl String[]
+  customizationDetails  String? // This will store JSON stringified customization data
+  order                 Order   @relation(fields: [orderId], references: [id])
+  product               Product @relation(fields: [productId], references: [id])
 }
 
 model Wallet {
@@ -393,4 +401,51 @@ model CouponUsage {
 enum DiscountType {
   PERCENTAGE
   FIXED
+}
+
+
+model Mask {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  description String?
+  svgPath     String
+  minWidth    Int      @default(400)
+  minHeight   Int      @default(400)
+  width       Int      @default(400)
+  height      Int      @default(400)
+  positionX   Int      @default(0)
+  positionY   Int      @default(0)
+  editorWidth Int      @default(600)
+  editorHeight Int     @default(600)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+  productMasks ProductMask[]
+}
+
+model ProductMask {
+  id          Int      @id @default(autoincrement())
+  productId   Int
+  maskId      Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  mask        Mask     @relation(fields: [maskId], references: [id])
+
+  @@unique([productId, maskId])
+}
+
+model CustomUpload {
+  id          Int      @id @default(autoincrement())
+  productId   Int
+  maskId      Int?
+  userId      Int
+  imageUrl    String
+  position    Json     // Stores x,y coordinates
+  scale       Float    @default(1.0)
+  rotation    Float    @default(0.0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+  
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
 }
