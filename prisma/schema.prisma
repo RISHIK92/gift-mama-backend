@@ -75,17 +75,40 @@ model Product {
 }
 
 model CustomizationTemplate {
-  id          Int      @id @default(autoincrement())
-  name        String
-  svgData     String   // SVG template data for customization preview
-  productId   Int
-  orderIndex  Int      @default(0) // For ordering templates
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @default(now()) @updatedAt
-  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  id               Int       @id @default(autoincrement())
+  product          Product   @relation(fields: [productId], references: [id])
+  productId        Int
+  name             String
+  svgData          String    // SVG template data
+  isActive         Boolean   @default(true)
+  orderIndex       Int       @default(0)
+  customizableAreas CustomizableArea[]
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  @@index([productId, orderIndex])
+  CustomUpload CustomUpload[]
+}
+
+model CustomizableArea {
+  id               Int       @id @default(autoincrement())
+  template         CustomizationTemplate @relation(fields: [templateId], references: [id])
+  templateId       Int
+  name             String?
+  shape            String    // 'rectangle', 'circle', 'triangle', 'hexagon'
+  centerX          Float     // X coordinate of center
+  centerY          Float     // Y coordinate of center
+  width            Float?    // For rectangle/triangle
+  height           Float?    // For rectangle/triangle
+  radius           Float?    // For circle/hexagon
+  defaultScale     Float     @default(1.0)
+  defaultRotation  Float     @default(0.0)
+  defaultPositionX Float     @default(0.0)
+  defaultPositionY Float     @default(0.0)
+  orderIndex       Int       @default(0)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  CustomUpload CustomUpload[]
 }
 
 model Category {
@@ -437,25 +460,26 @@ model ProductMask {
 }
 
 model CustomUpload {
-  id                  Int               @id @default(autoincrement())
-  productId           Int
-  userId              Int
-  imageUrl            String
-  originalImageUrl    String?           // Original image before cropping
-  width               Int?              // Width of the cropped image
-  height              Int?              // Height of the cropped image
-  positionX           Int?              // X position for placement on product
-  positionY           Int?              // Y position for placement on product
-  placementInfo       Json?             // Additional placement information
-  usedInOrders        String[]          // Order IDs where this upload is used
-  usedInCartItems     String[]          // CartItem IDs where this upload is used
-  templateId          Int?              // Associated template ID if applicable
-  createdAt           DateTime          @default(now())
-  updatedAt           DateTime          @default(now()) @updatedAt
-  
-  // Relations
-  user                User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  product             Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  id               Int       @id @default(autoincrement())
+  product          Product   @relation(fields: [productId], references: [id])
+  productId        Int
+  user             User      @relation(fields: [userId], references: [id])
+  userId           Int
+  template         CustomizationTemplate @relation(fields: [templateId], references: [id])
+  templateId       Int
+  area             CustomizableArea? @relation(fields: [areaId], references: [id])
+  areaId           Int?
+  imageUrl         String    // URL to processed image
+  originalImageUrl String    // URL to original image
+  width            Int
+  height           Int
+  scale            Float     @default(1.0)
+  rotation         Float     @default(0.0)
+  positionX        Float     @default(0.0)
+  positionY        Float     @default(0.0)
+  shape            String    // Shape used for this upload
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 }
 
 model Testimonial {

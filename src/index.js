@@ -287,42 +287,42 @@ app.get('/products', async (req, res) => {
 //     }
 // });
 
-app.post('/cart/add-customized', authenticateUser, async (req, res) => {
-  try {
-    const { productId, items } = req.body;
+// app.post('/cart/add-customized', authenticateUser, async (req, res) => {
+//   try {
+//     const { productId, items } = req.body;
     
-    let cart = await prisma.cart.findUnique({
-      where: { userId: req.user.id }
-    });
+//     let cart = await prisma.cart.findUnique({
+//       where: { userId: req.user.id }
+//     });
 
-    if (!cart) {
-      cart = await prisma.cart.create({
-        data: { userId: req.user.id }
-      });
-    }
+//     if (!cart) {
+//       cart = await prisma.cart.create({
+//         data: { userId: req.user.id }
+//       });
+//     }
 
-    const cartItem = await prisma.cartItem.create({
-      data: {
-        cartId: cart.id,
-        productId: parseInt(productId),
-        quantity: 1,
-        customizationDetails: items.map(item => ({
-          maskId: item.customizations.maskId,
-          uploadId: item.customizations.uploadId,
-          position: item.customizations.position,
-          scale: item.customizations.scale,
-          rotation: item.customizations.rotation
-        })),
-        customizationImageUrls: items.map(item => item.customizations.imageUrl)
-      }
-    });
+//     const cartItem = await prisma.cartItem.create({
+//       data: {
+//         cartId: cart.id,
+//         productId: parseInt(productId),
+//         quantity: 1,
+//         customizationDetails: items.map(item => ({
+//           maskId: item.customizations.maskId,
+//           uploadId: item.customizations.uploadId,
+//           position: item.customizations.position,
+//           scale: item.customizations.scale,
+//           rotation: item.customizations.rotation
+//         })),
+//         customizationImageUrls: items.map(item => item.customizations.imageUrl)
+//       }
+//     });
 
-    res.json(cartItem);
-  } catch (error) {
-    console.error('Error adding customized product to cart:', error);
-    res.status(500).json({ message: 'Error adding customized product to cart' });
-  }
-});
+//     res.json(cartItem);
+//   } catch (error) {
+//     console.error('Error adding customized product to cart:', error);
+//     res.status(500).json({ message: 'Error adding customized product to cart' });
+//   }
+// });
 
 app.post('/upload/custom-image', authenticateUser, upload.single('image'), async (req, res) => {
   try {
@@ -426,68 +426,42 @@ app.post('/upload/custom-image-direct', authenticateUser, upload.single('image')
       return res.status(400).json({ message: 'No image file uploaded' });
     }
 
-    const userId = req.user.id;
-    const productId = parseInt(req.body.productId, 10);
-
-    if (!productId) {
-      return res.status(400).json({ message: 'Product ID is required' });
+    // Required fields
+    const { productId, areaIndex } = req.body;
+    if (!productId || areaIndex === undefined) {
+      return res.status(400).json({ 
+        message: 'Product ID and Area Index are required',
+        code: 'MISSING_REQUIRED_FIELDS'
+      });
     }
 
-    // Process image with sharp
-    const processedImageBuffer = await sharp(req.file.buffer)
-      .resize(1415, 1415, { fit: 'inside' })
-      .toBuffer();
-
-    const metadata = await sharp(processedImageBuffer).metadata();
-
-    // Generate unique filenames
+    // Generate unique filename
     const fileExtension = path.extname(req.file.originalname);
-    const originalFilename = `original-${uuidv4()}${fileExtension}`;
-    const processedFilename = `processed-${uuidv4()}${fileExtension}`;
+    const filename = `custom-${Date.now()}${fileExtension}`;
 
-    // Upload original image to S3
+    // Upload to S3
     await s3Client.send(new PutObjectCommand({
       Bucket: BUCKET_NAME,
-      Key: `custom-images/${originalFilename}`,
+      Key: `custom-images/${filename}`,
       Body: req.file.buffer,
       ContentType: req.file.mimetype
     }));
 
-    // Upload processed image to S3
-    await s3Client.send(new PutObjectCommand({
-      Bucket: BUCKET_NAME,
-      Key: `custom-images/${processedFilename}`,
-      Body: processedImageBuffer,
-      ContentType: req.file.mimetype
-    }));
+    // Generate URL
+    const imageUrl = `https://${BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/custom-images/${filename}`;
 
-    // Generate S3 URLs (you might want to use CloudFront or signed URLs in production)
-    const baseUrl = `https://${BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com`;
-    const imageUrl = `${baseUrl}/custom-images/${processedFilename}`;
-    const originalImageUrl = `${baseUrl}/custom-images/${originalFilename}`;
-
-    // Save to DB
-    const customUpload = await prisma.customUpload.create({
-      data: {
-        productId,
-        userId,
-        imageUrl,
-        originalImageUrl,
-        width: metadata.width,
-        height: metadata.height,
-        placementInfo: { x: 50, y: 34, width: 1415, height: 1415 } // static default
-      }
-    });
-
-    res.status(201).json({
+    res.status(200).json({
       message: 'Image uploaded successfully',
-      imageUrl: customUpload.imageUrl,
-      customUploadId: customUpload.id
+      imageUrl,
+      areaIndex: Number(areaIndex)
     });
 
   } catch (error) {
-    console.error('❌ Detailed error:', error);
-    res.status(500).json({ message: 'Error uploading image', error: error.message });
+    console.error('Error uploading custom image:', error);
+    res.status(500).json({ 
+      message: 'Error uploading image', 
+      error: error.message 
+    });
   }
 });
 
@@ -2882,34 +2856,39 @@ app.get('/products/:productId/customized-preview', async (req, res) => {
   const { productId } = req.params;
   
   try {
-    // Find the product
+    // Find the product with its active customization template and areas
     const product = await prisma.product.findUnique({
       where: { id: Number(productId) },
-      include: {
+      include: { 
         customizationTemplates: {
           where: { isActive: true },
           orderBy: { orderIndex: 'asc' },
+          include: {
+            customizableAreas: {
+              orderBy: { orderIndex: 'asc' }
+            }
+          }
         }
       }
     });
-    
+
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
-    
+
     if (!product.isCustomizable) {
       return res.status(400).json({ message: 'This product does not support customization' });
     }
-    
+
     // Get the default template (first one in order)
-    const defaultTemplate = product.customizationTemplates.length > 0 
+    const defaultTemplate = product.customizationTemplates.length > 0
       ? product.customizationTemplates[0]
       : null;
-    
+
     if (!defaultTemplate) {
       return res.status(404).json({ message: 'No customization template found for this product' });
     }
-    
+
     // Send the product info with customization data
     res.json({
       id: product.id,
@@ -2917,9 +2896,21 @@ app.get('/products/:productId/customized-preview', async (req, res) => {
       price: product.price,
       discountedPrice: product.discountedPrice,
       svgData: defaultTemplate.svgData,
+      customizableAreas: defaultTemplate.customizableAreas.map(area => ({
+        id: area.id,
+        shape: area.shape,
+        centerX: area.centerX,
+        centerY: area.centerY,
+        width: area.width,
+        height: area.height,
+        radius: area.radius,
+        defaultScale: area.defaultScale,
+        defaultRotation: area.defaultRotation,
+        defaultPositionX: area.defaultPositionX,
+        defaultPositionY: area.defaultPositionY
+      })),
       templateId: defaultTemplate.id
     });
-    
   } catch (error) {
     console.error('Error getting product customization preview:', error);
     res.status(500).json({ message: 'Error retrieving customization data' });
@@ -2978,133 +2969,83 @@ app.post('/upload/custom-image', authenticateUser, async (req, res) => {
 
 app.post('/cart/add-customized', authenticateUser, async (req, res) => {
   try {
-    const userId = req.user.id;
     const { productId, customizations } = req.body;
-    
-    // Validate inputs
+    const userId = req.user.id;
+    console.log(userId)
+
     if (!productId || !customizations || !Array.isArray(customizations)) {
-      return res.status(400).json({ message: 'Product ID and customizations are required' });
+      return res.status(400).json({ message: 'Invalid request data' });
     }
-    
-    // Find or create user's cart
-    let cart = await prisma.cart.findUnique({
-      where: { userId },
-      include: { items: true }
-    });
-    
-    if (!cart) {
-      cart = await prisma.cart.create({
-        data: { userId },
-        include: { items: true }
-      });
-    }
-    
-    // Get product details
+
+    // Verify the product exists and is customizable
     const product = await prisma.product.findUnique({
       where: { id: Number(productId) },
-      include: {
-        customizationTemplates: {
-          where: { isActive: true },
-          orderBy: { orderIndex: 'asc' }
-        }
-      }
+      select: { isCustomizable: true, price: true }
     });
-    
+
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
-    
+
     if (!product.isCustomizable) {
       return res.status(400).json({ message: 'This product does not support customization' });
     }
-    
-    // Get the customization images
-    const customizationImageUrls = customizations.map(item => item.imageUrl).filter(Boolean);
-    
-    if (customizationImageUrls.length === 0) {
-      return res.status(400).json({ message: 'At least one custom image is required' });
+
+    // Verify all custom uploads exist and belong to the user
+    const uploadIds = customizations.map(c => c.customUploadId).filter(Boolean);
+    const uploads = await prisma.customUpload.findMany({
+      where: {
+        id: { in: uploadIds },
+        userId: userId
+      }
+    });
+
+    if (uploads.length !== uploadIds.length) {
+      return res.status(400).json({ message: 'Invalid custom uploads provided' });
     }
-    
-    // Get the template ID (using the first one if not specified)
-    const customTemplateId = customizations[0].templateId || 
-      (product.customizationTemplates.length > 0 ? product.customizationTemplates[0].id : null);
-    
-    // Check if the product is already in the cart
-    const existingCartItem = cart.items.find(item => item.productId === Number(productId));
-    
-    if (existingCartItem) {
-      // Update the existing cart item with new customization
+
+    // Create or update cart item
+    const existingItem = await prisma.cartItem.findFirst({
+      where: {
+        userId,
+        productId: Number(productId),
+        isCustomized: true
+      }
+    });
+
+    if (existingItem) {
+      // Update existing cart item
       await prisma.cartItem.update({
-        where: { id: existingCartItem.id },
+        where: { id: existingItem.id },
         data: {
-          customizationDetails: customizations,
-          customizationImageUrls,
-          customTemplateId,
-          updatedAt: new Date()
+          customUploads: {
+            set: uploadIds.map(id => ({ id }))
+          },
+          quantity: {
+            increment: 1
+          }
         }
       });
     } else {
-      // Add new cart item
+      // Create new cart item
       await prisma.cartItem.create({
         data: {
-          cartId: cart.id,
-          productId: Number(productId),
+          user: { connect: { id: userId } },
+          product: { connect: { id: Number(productId) } },
           quantity: 1,
-          customizationDetails: customizations,
-          customizationImageUrls,
-          customTemplateId,
-          flashSalePrice: product.discountedPrice || product.price
+          price: product.price, // or use discounted price if available
+          isCustomized: true,
+          customUploads: {
+            connect: uploadIds.map(id => ({ id }))
+          }
         }
       });
     }
-    
-    // Update the custom uploads to mark them as used in this cart item
-    for (const custom of customizations) {
-      if (custom.imageUrl) {
-        // Find the customUpload record by imageUrl
-        const customUpload = await prisma.customUpload.findFirst({
-          where: { imageUrl: custom.imageUrl }
-        });
-        
-        if (customUpload) {
-          // Update the record to include this cart item
-          const cartItemIds = customUpload.usedInCartItems || [];
-          if (!cartItemIds.includes(existingCartItem?.id?.toString())) {
-            await prisma.customUpload.update({
-              where: { id: customUpload.id },
-              data: {
-                usedInCartItems: [...cartItemIds, (existingCartItem?.id || 'new').toString()]
-              }
-            });
-          }
-        }
-      }
-    }
-    
-    // Get updated cart
-    const updatedCart = await prisma.cart.findUnique({
-      where: { userId },
-      include: {
-        items: {
-          include: {
-            product: {
-              include: {
-                images: true
-              }
-            }
-          }
-        }
-      }
-    });
-    
-    res.status(200).json({
-      message: 'Custom product added to cart',
-      cart: updatedCart
-    });
-    
+
+    res.json({ message: 'Custom product added to cart successfully' });
   } catch (error) {
     console.error('Error adding customized product to cart:', error);
-    res.status(500).json({ message: 'Error adding customized product to cart' });
+    res.status(500).json({ message: 'Error adding to cart' });
   }
 });
 
