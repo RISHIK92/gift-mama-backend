@@ -62,6 +62,8 @@ model Product {
   createdAt              DateTime                @default(now())
   updatedAt              DateTime                @default(now()) @updatedAt
   deliveryFee            Decimal?                @default(0)
+  stock                  Int?
+  youtubeLink            String?
 
   cartItems              CartItem[]
   wishlistItems          WishlistItem[]
@@ -79,14 +81,15 @@ model CustomizationTemplate {
   product          Product   @relation(fields: [productId], references: [id])
   productId        Int
   name             String
-  svgData          String    // SVG template data
+  svgData          String?   // Optional SVG template data (overlay)
+  thumbnailUrl     String?   // Thumbnail for template selection
   isActive         Boolean   @default(true)
   orderIndex       Int       @default(0)
   customizableAreas CustomizableArea[]
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
-
-  CustomUpload CustomUpload[]
+  
+  CustomUpload     CustomUpload[]
 }
 
 model CustomizableArea {
@@ -94,6 +97,7 @@ model CustomizableArea {
   template         CustomizationTemplate @relation(fields: [templateId], references: [id])
   templateId       Int
   name             String?
+  description      String?   // Add description field
   shape            String    // 'rectangle', 'circle', 'triangle', 'hexagon'
   centerX          Float     // X coordinate of center
   centerY          Float     // Y coordinate of center
@@ -105,10 +109,12 @@ model CustomizableArea {
   defaultPositionX Float     @default(0.0)
   defaultPositionY Float     @default(0.0)
   orderIndex       Int       @default(0)
+  allowedFormats   String[]  @default(["image/jpeg", "image/png"]) // Add allowed formats
+  maxFileSizeMB    Float     @default(5.0)  // Max file size in MB
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
-
-  CustomUpload CustomUpload[]
+  
+  CustomUpload     CustomUpload[]
 }
 
 model Category {
@@ -247,7 +253,7 @@ model Cart {
 model CartItem {
   id                    Int       @id @default(autoincrement())
   cartId                Int
-  productId             Int
+  productId             Int 
   quantity              Int       @default(1)
   flashSalePrice        Decimal?
   customizationDetails  Json?     // Will store array of customization data
@@ -470,14 +476,14 @@ model CustomUpload {
   area             CustomizableArea? @relation(fields: [areaId], references: [id])
   areaId           Int?
   imageUrl         String    // URL to processed image
-  originalImageUrl String    // URL to original image
-  width            Int
-  height           Int
-  scale            Float     @default(1.0)
-  rotation         Float     @default(0.0)
-  positionX        Float     @default(0.0)
-  positionY        Float     @default(0.0)
-  shape            String    // Shape used for this upload
+  originalImageUrl String?    // URL to original image
+  width            Int?
+  height           Int?
+  scale            Float?     @default(1.0)
+  rotation         Float?     @default(0.0)
+  positionX        Float?     @default(0.0) 
+  positionY        Float?     @default(0.0)
+  shape            String?    // Shape used for this upload
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 }
