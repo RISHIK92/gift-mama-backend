@@ -3,6 +3,7 @@ import { PrismaClient } from "@prisma/client";
 import { authenticateUser } from "../../auth/middleware.js";
 import Razorpay from "razorpay";
 import crypto from "crypto";
+import dotenv from "dotenv";
 
 const router = express.Router();
 const prisma = new PrismaClient();
