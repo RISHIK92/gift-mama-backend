@@ -258,7 +258,7 @@ app.post(
 
       // Upload to S3
       await s3Client.send(new PutObjectCommand(uploadParams));
-      const imageUrl = `https://${BUCKET_NAME}.s3.amazonaws.com/${key}`;
+      const imageUrl = `${process.env.CLOUDFRONT_URL}/${key}`;
 
       // Save to database using the updated schema
       const customUpload = await prisma.customUpload.create({
@@ -354,7 +354,7 @@ app.post(
       );
 
       // Generate URL
-      const imageUrl = `https://${BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/custom-images/${filename}`;
+      const imageUrl = `${process.env.CLOUDFRONT_URL}/custom-images/${filename}`;
 
       res.status(200).json({
         message: "Image uploaded successfully",
