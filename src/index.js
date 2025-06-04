@@ -738,18 +738,19 @@ app.post("/create-order", authenticateUser, async (req, res) => {
       addressId,
       shippingAddress,
       notes,
-      cartItems, // Added to capture customization details
+      cartItems,
       deliveryFee,
     } = req.body;
 
+    // Validate required fields
     if (!amount || !receipt) {
       return res
         .status(400)
         .json({ message: "Amount and receipt are required" });
     }
 
+    // Validate address
     let address;
-
     if (addressId) {
       address = await prisma.address.findUnique({
         where: {
@@ -769,6 +770,7 @@ app.post("/create-order", authenticateUser, async (req, res) => {
         .json({ message: "Address information is required" });
     }
 
+    // Validate wallet balance if using wallet
     if (useWallet) {
       const wallet = await prisma.wallet.findUnique({
         where: { userId: req.user.id },
@@ -781,6 +783,24 @@ app.post("/create-order", authenticateUser, async (req, res) => {
       }
     }
 
+    // Validate stock availability
+    const cart = await prisma.cart.findUnique({
+      where: { userId: req.user.id },
+      include: { items: { include: { product: true } } },
+    });
+
+    if (cart) {
+      for (const item of cart.items) {
+        if (item.product.stock !== null && item.product.stock < item.quantity) {
+          return res.status(400).json({
+            message: `Not enough stock for ${item.product.name}. Available: ${item.product.stock}, Requested: ${item.quantity}`,
+            productId: item.product.id,
+          });
+        }
+      }
+    }
+
+    // Prepare Razorpay notes
     const razorpayNotes = {
       shipping_address: JSON.stringify({
         name: address.name,
@@ -794,29 +814,21 @@ app.post("/create-order", authenticateUser, async (req, res) => {
       }),
     };
 
-    // Add customization details to Razorpay notes if available
+    // Add customization details if available
     if (cartItems && cartItems.length > 0) {
-      // Ensure we handle the customizationImageUrls as arrays
       const processedCartItems = cartItems.map((item) => {
         const processed = { ...item };
+        processed.customizationImageUrls =
+          processed.customizationImageUrls || [];
 
-        // Ensure customizationImageUrls is always an array
-        if (!processed.customizationImageUrls) {
-          processed.customizationImageUrls = [];
-
-          // For backward compatibility - convert single URL to array if provided
-          if (processed.customizationImageUrl) {
-            processed.customizationImageUrls.push(
-              processed.customizationImageUrl
-            );
-          }
+        if (processed.customizationImageUrl) {
+          processed.customizationImageUrls.push(
+            processed.customizationImageUrl
+          );
         }
 
-        // Extract image URLs from customizationDetails if available
         if (processed.customizationDetails) {
           let details = processed.customizationDetails;
-
-          // Parse if it's a string
           if (typeof details === "string") {
             try {
               details = JSON.parse(details);
@@ -825,58 +837,46 @@ app.post("/create-order", authenticateUser, async (req, res) => {
             }
           }
 
-          // Extract image URLs from various potential structures
           if (typeof details === "object") {
-            // Check for direct imageUrl property
-            if (details.imageUrl) {
+            if (details.imageUrl)
               processed.customizationImageUrls.push(details.imageUrl);
-            }
-
-            // Check for uploadedImage property
-            if (details.uploadedImage) {
+            if (details.uploadedImage)
               processed.customizationImageUrls.push(details.uploadedImage);
-            }
 
-            // Check for uploads array
-            if (details.uploads && Array.isArray(details.uploads)) {
+            if (details.uploads) {
               details.uploads.forEach((upload) => {
-                if (upload.imageUrl) {
+                if (upload.imageUrl)
                   processed.customizationImageUrls.push(upload.imageUrl);
-                }
               });
             }
 
-            // Check for masks array
-            if (details.masks && Array.isArray(details.masks)) {
+            if (details.masks) {
               details.masks.forEach((mask) => {
-                if (mask.imageUrl) {
+                if (mask.imageUrl)
                   processed.customizationImageUrls.push(mask.imageUrl);
-                }
-                if (mask.upload && mask.upload.imageUrl) {
+                if (mask.upload?.imageUrl)
                   processed.customizationImageUrls.push(mask.upload.imageUrl);
-                }
               });
             }
           }
         }
 
-        // Remove duplicates from customizationImageUrls
         processed.customizationImageUrls = [
           ...new Set(processed.customizationImageUrls),
         ];
-
         return processed;
       });
 
       razorpayNotes.customization_details = JSON.stringify(processedCartItems);
     }
 
-    if (notes && typeof notes === "object" && notes.custom_notes) {
-      razorpayNotes.custom_notes = notes.custom_notes;
-    } else if (typeof notes === "string") {
-      razorpayNotes.custom_notes = notes;
+    // Add custom notes if provided
+    if (notes) {
+      razorpayNotes.custom_notes =
+        typeof notes === "object" ? JSON.stringify(notes) : notes;
     }
 
+    // Create Razorpay order
     const options = {
       amount: amount * 100,
       currency: currency,
@@ -887,15 +887,12 @@ app.post("/create-order", authenticateUser, async (req, res) => {
 
     const razorpayOrder = await razorpay.orders.create(options);
 
-    // Process customization details for storing in the database
-    const customizationMetadata =
-      cartItems && cartItems.length > 0
-        ? JSON.stringify(razorpayNotes.customization_details)
-        : null;
-
+    // Prepare customization metadata for database
+    const customizationMetadata = razorpayNotes.customization_details || null;
     const notesForPrisma =
       typeof notes === "object" ? JSON.stringify(notes) : notes || null;
 
+    // Create order in database
     const order = await prisma.order.create({
       data: {
         userId: req.user.id,
@@ -907,7 +904,7 @@ app.post("/create-order", authenticateUser, async (req, res) => {
         walletAmount: walletAmount || 0,
         deliveryFee: deliveryFee,
         notes: notesForPrisma,
-        customizationDetails: customizationMetadata, // Store customization details
+        customizationDetails: customizationMetadata,
         shippingAddress: {
           create: {
             name: address.name,
@@ -931,8 +928,11 @@ app.post("/create-order", authenticateUser, async (req, res) => {
       orderId: order.id,
     });
   } catch (error) {
-    console.error("Error creating Razorpay order:", error);
-    res.status(500).json({ message: "Failed to create order" });
+    console.error("Error creating order:", error);
+    res.status(500).json({
+      message: "Failed to create order",
+      error: error.message,
+    });
   }
 });
 
@@ -944,7 +944,7 @@ app.post("/verify-payment", authenticateUser, async (req, res) => {
       razorpay_signature,
       useWallet,
       walletAmount = 0,
-      customizationDetails, // Added to capture customization details
+      customizationDetails,
     } = req.body;
 
     // Validate input
@@ -968,6 +968,7 @@ app.post("/verify-payment", authenticateUser, async (req, res) => {
       });
     }
 
+    // Get the order
     const order = await prisma.order.findUnique({
       where: { razorpayOrderId: razorpay_order_id },
       include: { shippingAddress: true },
@@ -980,6 +981,7 @@ app.post("/verify-payment", authenticateUser, async (req, res) => {
       });
     }
 
+    // Process wallet payment if applicable
     if (useWallet && walletAmount > 0) {
       const wallet = await prisma.wallet.findUnique({
         where: { userId: req.user.id },
@@ -1007,6 +1009,7 @@ app.post("/verify-payment", authenticateUser, async (req, res) => {
       });
     }
 
+    // Update order status
     await prisma.order.update({
       where: { razorpayOrderId: razorpay_order_id },
       data: {
@@ -1016,65 +1019,110 @@ app.post("/verify-payment", authenticateUser, async (req, res) => {
       },
     });
 
+    // Process cart items and update stock
     const cart = await prisma.cart.findUnique({
       where: { userId: req.user.id },
       include: { items: { include: { product: true } } },
     });
 
     if (cart && cart.items.length > 0) {
-      // Retrieve customization details for each cart item
-      for (const item of cart.items) {
-        // Find matching customization details from the submitted data
-        let customizationImageUrls = [];
-        let itemCustomizationDetails = null;
+      await prisma.$transaction(async (tx) => {
+        for (const item of cart.items) {
+          // Update product stock
+          if (item.product.stock !== null) {
+            await tx.product.update({
+              where: { id: item.product.id },
+              data: {
+                stock: {
+                  decrement: item.quantity,
+                },
+              },
+            });
 
-        if (customizationDetails && Array.isArray(customizationDetails)) {
-          const matchingCustomization = customizationDetails.find(
-            (custom) =>
-              custom.itemId === item.id || custom.productId === item.productId
-          );
+            // Check if stock is now low (optional)
+            const updatedProduct = await tx.product.findUnique({
+              where: { id: item.product.id },
+            });
 
-          if (matchingCustomization) {
-            // Handle customizationImageUrls as array
-            if (
-              matchingCustomization.customizationImageUrls &&
-              Array.isArray(matchingCustomization.customizationImageUrls)
-            ) {
-              customizationImageUrls =
-                matchingCustomization.customizationImageUrls;
+            if (updatedProduct.stock !== null && updatedProduct.stock < 5) {
+              // Here you could trigger a low stock notification
+              console.log(`Low stock alert for product ${item.product.id}`);
             }
-            // For backward compatibility - convert single URL to array if provided
-            else if (matchingCustomization.customizationImageUrl) {
-              customizationImageUrls = [
-                matchingCustomization.customizationImageUrl,
-              ];
-            }
-
-            // Handle customization details
-            itemCustomizationDetails =
-              matchingCustomization.customizationDetails;
           }
+
+          // Process customization details
+          let customizationImageUrls = [];
+          let itemCustomizationDetails = null;
+
+          if (customizationDetails && Array.isArray(customizationDetails)) {
+            const matchingCustomization = customizationDetails.find(
+              (custom) =>
+                custom.itemId === item.id || custom.productId === item.productId
+            );
+
+            if (matchingCustomization) {
+              if (Array.isArray(matchingCustomization.customizationImageUrls)) {
+                customizationImageUrls =
+                  matchingCustomization.customizationImageUrls;
+              } else if (matchingCustomization.customizationImageUrl) {
+                customizationImageUrls = [
+                  matchingCustomization.customizationImageUrl,
+                ];
+              }
+
+              itemCustomizationDetails =
+                matchingCustomization.customizationDetails;
+            }
+          }
+
+          // Create order item
+          await tx.orderItem.create({
+            data: {
+              orderId: order.id,
+              productId: item.productId,
+              quantity: item.quantity,
+              price: item.product.discountedPrice || item.product.price,
+              customizationImageUrl: customizationImageUrls,
+              customizationDetails: itemCustomizationDetails
+                ? typeof itemCustomizationDetails === "object"
+                  ? JSON.stringify(itemCustomizationDetails)
+                  : itemCustomizationDetails
+                : null,
+              customTemplateId: item.customTemplateId,
+            },
+          });
         }
 
-        // Create order item with customization
-        await prisma.orderItem.create({
-          data: {
-            orderId: order.id,
-            productId: item.productId,
-            quantity: item.quantity,
-            price: item.product.discountedPrice || item.product.price,
-            customizationImageUrl: customizationImageUrls, // Now using the array
-            customizationDetails: itemCustomizationDetails
-              ? typeof itemCustomizationDetails === "object"
-                ? JSON.stringify(itemCustomizationDetails)
-                : itemCustomizationDetails
-              : null,
-          },
+        // Clear the cart
+        await tx.cartItem.deleteMany({
+          where: { cartId: cart.id },
         });
-      }
 
-      await prisma.cartItem.deleteMany({
-        where: { cartId: cart.id },
+        // Remove applied coupon if any
+        if (cart.appliedCouponId) {
+          await tx.couponUsage.create({
+            data: {
+              couponId: cart.appliedCouponId,
+              userId: req.user.id,
+              orderId: order.id,
+            },
+          });
+
+          await tx.coupon.update({
+            where: { id: cart.appliedCouponId },
+            data: { usageCount: { increment: 1 } },
+          });
+
+          await tx.cart.update({
+            where: { id: cart.id },
+            data: {
+              appliedCouponId: null,
+              couponDiscountAmount: 0,
+              couponDiscountType: null,
+              couponDiscountValue: null,
+            },
+          });
+        }
       });
     }
 
@@ -1088,6 +1136,7 @@ app.post("/verify-payment", authenticateUser, async (req, res) => {
     res.status(500).json({
       status: "error",
       message: "Payment verification failed",
+      error: error.message,
     });
   }
 });
