@@ -4,7 +4,6 @@ import bcrypt from "bcryptjs";
 import cors from "cors";
 import dotenv from "dotenv";
 import { PrismaClient } from "@prisma/client";
-import { signInSchema, signUpSchema } from "../utils/types/zodTypes.js";
 import { authenticateUser } from "../auth/middleware.js";
 import Razorpay from "razorpay";
 import crypto from "crypto";

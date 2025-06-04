@@ -1,5 +1,6 @@
 import express from "express";
 import { PrismaClient } from "@prisma/client";
+import { signInSchema, signUpSchema } from "../../utils/types/zodTypes";
 
 const router = express.Router();
 const prisma = new PrismaClient();
