@@ -1,3 +1,5 @@
+import sharp from "sharp";
+
 export const processImageByShape = async (inputPath, shape, width, height) => {
   const outputPath = `${inputPath}-processed.png`;
   const sharpInstance = sharp(inputPath);

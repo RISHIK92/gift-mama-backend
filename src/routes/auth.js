@@ -1,6 +1,8 @@
 import express from "express";
 import { PrismaClient } from "@prisma/client";
 import { signInSchema, signUpSchema } from "../../utils/types/zodTypes.js";
+import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
 
 const router = express.Router();
 const prisma = new PrismaClient();
